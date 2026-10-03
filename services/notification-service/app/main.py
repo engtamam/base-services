@@ -48,6 +48,7 @@ def create_app() -> FastAPI:
     settings.assert_cors_config_ok()
     # And a service that gates sending on consent must be able to ask.
     settings.assert_consent_config_ok()
+    settings.assert_internal_caller_config_ok()   # notification-019: fail closed on a malformed caller map
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)
     logger = get_logger("app.main")
 

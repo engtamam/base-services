@@ -8,6 +8,7 @@ send at a host of their choosing. Host is allow-listed at the http layer.
 from __future__ import annotations
 
 import json as _json
+from uuid import uuid4
 
 from app.adapters.notify_http import bearer, ok, post_json
 from app.ports.errors import ConfigError
@@ -168,6 +169,8 @@ class MetaWhatsApp:
         try:
             return str(_json.loads(body).get("messages", [{}])[0].get("id", "") or "")
         except (ValueError, IndexError, AttributeError, KeyError):
-            # Accepted but unparseable body: the send succeeded, we just have no id to match on. A
-            # non-empty marker keeps it TRUTHY (a success) without pretending to be a real wamid.
-            return "wamid:unparsed"
+            # notification-012: accepted but unparseable body — the send succeeded, we just have no id to
+            # match on. The marker must stay TRUTHY (a success) but be UNIQUE per send: a shared sentinel
+            # was stored on every such delivery, so a later receipt carrying it mis-attributed to all of
+            # them. A uuid suffix keeps it truthy and collision-free (it still matches no real receipt).
+            return f"wamid:unparsed:{uuid4().hex}"

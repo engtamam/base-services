@@ -27,6 +27,15 @@ _HISTORY_KIND = "history"
 _CONTACTS = "wa_contacts"
 _CONTACT_KIND = "contact"
 
+# notification-008: receipt-status ordering for the same-second tie-break. A WhatsApp message progresses
+# sent -> delivered -> read; `failed` is terminal and outranks all. Equal whole-second timestamps must be
+# resolved by this rank, not by arrival order.
+_RECEIPT_ORDER = {"sent": 0, "delivered": 1, "read": 2, "failed": 3}
+
+
+def _receipt_rank(status: str) -> int:
+    return _RECEIPT_ORDER.get((status or "").lower(), -1)
+
 
 class TemplateStore:
     def __init__(self, store: DataStore) -> None:
@@ -92,13 +101,20 @@ class DeliveryStore:
         self._store = store
 
     async def record(self, d: Delivery) -> Delivery:
-        await self._store.put(_DELIVERIES, d.id, d.to_dict())
+        row = d.to_dict()
+        # notification-010: a constant filter field so the operator log can be an INDEXED, ts-ordered
+        # read (find needs a non-empty where) instead of an UNORDERED scan_all that returns an arbitrary
+        # `limit` rows while claiming to be the "recent" ones.
+        row["_log"] = "all"
+        await self._store.put(_DELIVERIES, d.id, row)
         return d
 
     async def list(self, limit: int = 100) -> list[dict]:
-        # sweeper: an operator's view of recent delivery attempts across every tenant. Bounded
-        # by the caller's limit, and not reachable from any tenant-facing route.
-        return await self._store.scan_all(_DELIVERIES, limit)
+        # An operator's view of the most-recent delivery attempts across every tenant — newest first,
+        # bounded, served from the index (not a whole-table scan). notification-010.
+        rows, _ = await self._store.find(_DELIVERIES, {"_log": "all"},
+                                         limit=max(1, limit), sort=("ts", "desc"))
+        return rows
 
     async def whatsapp_outcome_counts(self, cap: int) -> dict:
         """Operator glance: capped outcome tally over the most-recent WhatsApp deliveries.
@@ -149,7 +165,9 @@ class DeliveryStore:
         return [Delivery.from_dict(r) for r in rows]
 
     async def save(self, d: Delivery) -> Delivery:
-        await self._store.put(_DELIVERIES, d.id, d.to_dict())
+        # Keep the operator-log index field present on every write path (notification-010), not only
+        # record() — otherwise a delivery that was only ever save()d (e.g. via drain) is invisible to list().
+        await self._store.put(_DELIVERIES, d.id, {**d.to_dict(), "_log": "all"})
         return d
 
     # ── receipts: match a webhook status back to the send it belongs to ────────
@@ -171,12 +189,30 @@ class DeliveryStore:
         and the receipt axis stays separate from the send-state machine, so recording a receipt never
         disturbs `sent`/`queued`/`failed`. The event log is APPEND-ONLY (every state is its own row),
         so a consumer reading the log forward sees `delivered` then `read`, each exactly once."""
-        d = await self.by_provider_message_id(wamid)
-        if d is None:
-            return None
-        if ts >= d.receipt_ts:
+        # notification-008 + 009: advance the delivery's receipt field with an atomic CAS loop (a plain
+        # read-modify-write let a concurrent receipt clobber a newer one), and break the SAME-SECOND tie
+        # by STATUS RANK — Meta timestamps are whole seconds, so a `delivered` arriving same-second after
+        # a `read` must not overwrite it. ts>cur, OR equal ts with a strictly higher rank, advances.
+        for _ in range(8):
+            d = await self.by_provider_message_id(wamid)
+            if d is None:
+                return None
+            raw = await self._store.get(_DELIVERIES, d.id) or {}
+            ver = int(raw.get("version", 0))
+            advance = ts > d.receipt_ts or (
+                ts == d.receipt_ts
+                and _receipt_rank(receipt_status) > _receipt_rank(d.receipt_status))
+            if not advance:
+                break
             d.receipt_status, d.receipt_ts = receipt_status, ts
-            await self._store.put(_DELIVERIES, d.id, d.to_dict())
+            value = {**raw, **d.to_dict(), "_log": "all"}
+            if await self._store.cas(_DELIVERIES, d.id, ver, value):
+                break
+            # lost the race — another receipt landed first; re-read and re-evaluate the rank/ts guard.
+        else:
+            d = await self.by_provider_message_id(wamid)
+            if d is None:
+                return None
         # Append-only event, keyed by a monotonic seq so the ordered forward read is stable and every
         # state change is a distinct row (id would collapse delivered+read into one).
         eid = seq or f"{d.id}:{receipt_status}:{ts}"

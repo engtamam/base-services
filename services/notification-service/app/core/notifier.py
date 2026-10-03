@@ -24,6 +24,13 @@ from app.core.stores import DeliveryStore, InAppStore, PreferenceStore, Template
 
 CHANNELS = ("email", "sms", "whatsapp", "inapp")
 
+
+def _var_order(item):
+    """Sort key for raw-mode WhatsApp variables (notification-014): numeric keys first, in NUMERIC order
+    ({{2}} before {{10}}), then any named keys lexicographically. All-numeric keys sort fully numerically."""
+    k = str(item[0])
+    return (0, int(k)) if k.isdigit() else (1, k)
+
 # How a send is attempted. The PLATFORM decides; we enforce.
 INLINE, QUEUED_MODE = "inline", "queued"
 DELIVERY_MODES = (INLINE, QUEUED_MODE)
@@ -226,9 +233,12 @@ class NotificationService:
         if wa is None:
             return await rec(recipient, "whatsapp", template_key, "failed",
                                       error="whatsapp channel not configured")
-        # No registry wired ⇒ dev/raw mode: forward the name + values as-is (order by key).
+        # No registry wired ⇒ dev/raw mode: forward the name + values as-is, in NUMERIC key order.
+        # notification-014: WhatsApp positional params are numbered ({{1}}..{{10}}); a lexicographic sort
+        # ordered "10" before "2", silently mis-filling the template. Sort numerically when every key is
+        # integer-like, else fall back to lexicographic (named params).
         if self._wa_templates is None:
-            ordered = [str(v) for _, v in sorted(variables.items())]
+            ordered = [str(v) for _, v in sorted(variables.items(), key=_var_order)]
         else:
             tmpl = await self._wa_templates.get(tenant, template_key, language)
             if tmpl is None:
@@ -435,10 +445,15 @@ class NotificationService:
                     self._email.send, recipient, subject, body, body, self._email_from)
             elif channel == "sms":
                 ok, provider = await asyncio.to_thread(self._sms.send, recipient, body)
-            else:  # inapp — our own store, not a third party (whatsapp handled in _deliver_whatsapp)
+            elif channel == "inapp":   # our own store, not a third party
                 await self._inapp.add(InAppItem(id=new_id(), user=user_id or recipient,
                                                 title=subject, body=body))
                 ok, provider = True, "inapp"
+            else:
+                # notification-015: anything else (a WhatsApp send must go through _deliver_whatsapp, and
+                # drain() re-sends WA via _wa_resend) is UNROUTABLE here. The old `else: inapp` silently
+                # delivered such a message as an in-app notification. Fail loudly instead of mis-routing.
+                return False, "", f"unroutable channel: {channel}"
             return bool(ok), provider, "" if ok else "send failed"
         except Exception as exc:
             # The exception TYPE is the classifier's only evidence, so keep it. A provider that

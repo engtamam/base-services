@@ -114,6 +114,27 @@ class Settings(BaseSettings):
                 "CORS_ALLOWED_ORIGINS='*' in production lets any site on the internet call this "
                 "service with a user's browser. List the origins you actually serve.")
 
+    def assert_internal_caller_config_ok(self) -> None:
+        """Boot guard (notification-019): when the static/jwks caller driver is selected, its key map
+        must PARSE. The map was read through _json_any_map, which swallows malformed JSON to {} — so a
+        typo silently disabled per-caller identity (every caller fell back to the shared token) with no
+        error. Fail closed instead: the map must be valid, non-empty JSON object for the chosen driver."""
+        if self.INTERNAL_CALLER_DRIVER not in ("static", "jwks"):
+            return
+        raw = (self.INTERNAL_CALLER_PUBLIC_KEYS_JSON if self.INTERNAL_CALLER_DRIVER == "static"
+               else self.INTERNAL_CALLER_JWKS_JSON)
+        field = ("INTERNAL_CALLER_PUBLIC_KEYS_JSON" if self.INTERNAL_CALLER_DRIVER == "static"
+                 else "INTERNAL_CALLER_JWKS_JSON")
+        try:
+            parsed = _json.loads(raw) if raw.strip() else None
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"{field} is not valid JSON for INTERNAL_CALLER_DRIVER="
+                             f"{self.INTERNAL_CALLER_DRIVER!r}: {exc}") from None
+        if not isinstance(parsed, dict) or not parsed:
+            raise ValueError(f"{field} must be a non-empty JSON object for INTERNAL_CALLER_DRIVER="
+                             f"{self.INTERNAL_CALLER_DRIVER!r} — a malformed/empty map silently disables "
+                             "per-caller identity and admits everyone via the shared token.")
+
     # ── Internal service-to-service auth (REQUIRED) ─────────────────────────
     # Shared token for /internal/* endpoints. Must be strong (>= 32 chars).
     INTERNAL_SERVICE_TOKEN: str = Field(min_length=32)

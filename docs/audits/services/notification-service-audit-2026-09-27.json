@@ -115,7 +115,8 @@
       "line": 177,
       "scenario": "apply_receipt guards with `if ts >= d.receipt_ts`. Meta delivery/read receipt timestamps are second-resolution, so a `read` and a `delivered` for the same message frequently carry the SAME timestamp. If the `delivered` webhook arrives AFTER the `read` (Meta does not guarantee order), ts==receipt_ts satisfies `>=` and the delivery's receipt_status is overwritten from 'read' back to 'delivered' — the exact regression the comment above claims is prevented.",
       "evidence": "if ts >= d.receipt_ts:\n            d.receipt_status, d.receipt_ts = receipt_status, ts",
-      "recommendation": "Rank receipt statuses (sent<delivered<read<failed as applicable) and only advance when the new status outranks the current one at equal timestamps, rather than relying on `ts >=` alone."
+      "recommendation": "Rank receipt statuses (sent<delivered<read<failed as applicable) and only advance when the new status outranks the current one at equal timestamps, rather than relying on `ts >=` alone.",
+      "status": "fixed"
     },
     {
       "id": "notification-009",
@@ -126,7 +127,8 @@
       "line": 174,
       "scenario": "apply_receipt() reads the delivery via by_provider_message_id() then put()s the mutated copy. Two receipts for the same wamid processed concurrently (Meta batches + retries, multiple pods) both read the pre-update row and both write, so a later 'read' can be lost under a concurrently-written 'delivered'. No CAS/compare-and-set is used, unlike the idempotency reservation which correctly uses cas().",
       "evidence": "d = await self.by_provider_message_id(wamid)\n        if d is None:\n            return None\n        if ts >= d.receipt_ts:\n            ... await self._store.put(_DELIVERIES, d.id, d.to_dict())",
-      "recommendation": "Use a CAS/optimistic-version update for the receipt fields, or make the receipt event log (which is already append-only) the source of truth and derive the delivery's latest receipt_status from it."
+      "recommendation": "Use a CAS/optimistic-version update for the receipt fields, or make the receipt event log (which is already append-only) the source of truth and derive the delivery's latest receipt_status from it.",
+      "status": "fixed"
     },
     {
       "id": "notification-010",
@@ -137,7 +139,8 @@
       "line": 101,
       "scenario": "GET /api/v1/notifications/deliveries -> DeliveryStore.list() -> scan_all(_DELIVERIES, limit). scan_all returns the first N rows in the store's natural (insertion/arbitrary) order, NOT newest-first. As the deliveries collection grows, the operator's 'recent delivery attempts across the platform' screen actually shows the OLDEST rows and never the recent failures it exists to diagnose, and it is a whole-collection scan reachable from a request path.",
       "evidence": "return await self._store.scan_all(_DELIVERIES, limit)",
-      "recommendation": "Replace with an indexed, sorted read (find with sort=('ts','desc')) the way whatsapp_outcome_counts and by_tenant already do; the whole-platform scan on a request path should be an ordered, bounded query."
+      "recommendation": "Replace with an indexed, sorted read (find with sort=('ts','desc')) the way whatsapp_outcome_counts and by_tenant already do; the whole-platform scan on a request path should be an ordered, bounded query.",
+      "status": "fixed"
     },
     {
       "id": "notification-011",
@@ -160,7 +163,8 @@
       "line": 173,
       "scenario": "When Meta accepts a send but the body cannot be parsed, _post() returns the fixed string 'wamid:unparsed'. Two such sends both persist provider_message_id='wamid:unparsed'. A later receipt resolved via by_provider_message_id(wamid) does find(..., limit=1) and attributes the receipt to whichever of the colliding deliveries the store returns first — the receipt lands on the wrong message.",
       "evidence": "return \"wamid:unparsed\"",
-      "recommendation": "Make the sentinel unique per send (e.g. 'wamid:unparsed:' + uuid4) so it stays truthy but never collides, or treat an unparseable accepted body as a failure with no id."
+      "recommendation": "Make the sentinel unique per send (e.g. 'wamid:unparsed:' + uuid4) so it stays truthy but never collides, or treat an unparseable accepted body as a failure with no id.",
+      "status": "fixed"
     },
     {
       "id": "notification-013",
@@ -171,7 +175,8 @@
       "line": 190,
       "scenario": "refund_payment() calls get_payment_status() ('captured' check) then refund() as two separate Graph calls. Two concurrent refund requests for the same reference_id both observe status='captured' and both proceed, issuing two refunds before Meta flips the status. The module's own comment admits 'per-tenant locking is layered in P6', so the once-only-by-state guarantee does not hold under concurrency today.",
       "evidence": "lk = adapter.get_payment_status(...)\n    ...\n    res = adapter.refund(reference_id=body.reference_id, ...)",
-      "recommendation": "Add an idempotency/lock keyed by (tenant, reference_id) around the lookup+refund pair (the same cas() reservation pattern the notifier uses) so a redelivered or concurrent refund is refused, not repeated."
+      "recommendation": "Add an idempotency/lock keyed by (tenant, reference_id) around the lookup+refund pair (the same cas() reservation pattern the notifier uses) so a redelivered or concurrent refund is refused, not repeated.",
+      "status": "fixed"
     },
     {
       "id": "notification-014",
@@ -182,7 +187,8 @@
       "line": 226,
       "scenario": "When no WhatsAppTemplateRegistry is wired (self._wa_templates is None), variables are ordered by `sorted(variables.items())`. Meta template body params are positional {{1}},{{2}},...; lexicographic key sort places '10' before '2', so a template with 10+ variables (or any non-zero-padded numeric keys) receives its parameters in the wrong order and renders incorrect content.",
       "evidence": "ordered = [str(v) for _, v in sorted(variables.items())]",
-      "recommendation": "Sort numerically when keys are integer-like, or require the caller to pass an explicit ordered list in raw mode rather than inferring order from dict keys."
+      "recommendation": "Sort numerically when keys are integer-like, or require the caller to pass an explicit ordered list in raw mode rather than inferring order from dict keys.",
+      "status": "fixed"
     },
     {
       "id": "notification-015",
@@ -193,7 +199,8 @@
       "line": 376,
       "scenario": "_deliver() dispatches channel=='email' and 'sms', and everything ELSE (the else branch) to the in-app store. It is only saved today because _deliver_whatsapp never queues (finding notification-001). The moment WhatsApp failures are correctly routed to the queue, drain() will call _deliver('whatsapp', ...), fall into the else branch, and silently write the customer's message into the in-app feed instead of re-sending it via WhatsApp.",
       "evidence": "else:  # inapp — our own store, not a third party (whatsapp handled in _deliver_whatsapp)\n                await self._inapp.add(InAppItem(...))",
-      "recommendation": "Make the else branch explicit for 'inapp' and raise/record 'unroutable channel' for anything unexpected, and give WhatsApp its own re-send path in drain() so fixing notification-001 does not silently divert messages."
+      "recommendation": "Make the else branch explicit for 'inapp' and raise/record 'unroutable channel' for anything unexpected, and give WhatsApp its own re-send path in drain() so fixing notification-001 does not silently divert messages.",
+      "status": "fixed"
     },
     {
       "id": "notification-016",
@@ -239,7 +246,8 @@
       "line": 21,
       "scenario": "_json_any_map() returns {} on any malformed/empty JSON. INTERNAL_CALLER_PUBLIC_KEYS_JSON / INTERNAL_CALLER_JWKS_JSON feed this. A typo in the operator's JSON does not fail boot; instead the static/jwks driver silently sees zero keys, so every per-caller assertion fails verification and — with INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK on (default) — everyone quietly degrades back to unnamed flat-token access, erasing the per-caller identity the deployment thought it enabled.",
       "evidence": "except (ValueError, TypeError):\n        return {}",
-      "recommendation": "Validate these maps at boot (raise on malformed JSON when the matching driver is selected) rather than defaulting to an empty map that silently disables per-caller identity."
+      "recommendation": "Validate these maps at boot (raise on malformed JSON when the matching driver is selected) rather than defaulting to an empty map that silently disables per-caller identity.",
+      "status": "fixed"
     },
     {
       "id": "notification-020",

@@ -184,6 +184,25 @@ async def refund_payment(request: Request, body: _RefundIn,
     denied = await _tenant_gate(request, body.tenant or "")
     if denied is not None:
         return denied
+    # notification-013: serialise the lookup+refund pair with a cas() reservation keyed by
+    # (tenant, reference_id). The state guard below is a two-call TOCTOU on its own — two concurrent (or
+    # one redelivered) refunds both read 'captured' and both move money. A reserve-if-absent lock lets
+    # exactly ONE refund proceed per reference; a loser is refused, not repeated. The lock is RELEASED on
+    # any path that does not actually call adapter.refund (a failed precondition), so a corrected retry is
+    # still possible; it is KEPT once the refund is dispatched, making the money movement once-only.
+    ds = request.app.state.container.datastore
+    tref = body.tenant or ""
+    lock_key = f"{len(tref)}:{tref}:{body.reference_id}"
+    reserved = await ds.cas("native_refund_locks", lock_key, 0,
+                            {"id": lock_key, "tenant": tref, "reference_id": body.reference_id})
+    if not reserved:
+        return JSONResponse(
+            {"ok": False, "reason": "a refund for this reference is already in progress or completed",
+             "code": "REFUND_IN_PROGRESS"}, status_code=409)
+
+    async def _release():
+        await ds.delete("native_refund_locks", lock_key)
+
     adapter = await _payments_adapter(request, settings, body.tenant or "")
     # FAIL-CLOSED money guard against the SOURCE OF TRUTH (the lookup, per this module's own contract)
     # BEFORE releasing money. Without it the refund route trusted the caller's amount/currency blindly:
@@ -195,26 +214,31 @@ async def refund_payment(request: Request, body: _RefundIn,
                                  configuration=body.payment_configuration,
                                  reference_id=body.reference_id)
     if not lk.ok:
+        await _release()
         return JSONResponse(
             {"ok": False, "reason": f"cannot verify payment before refund: {lk.error}",
              "code": "REFUND_LOOKUP_FAILED"}, status_code=502)
     if lk.status != "captured":
         # Not refundable: pending/failed/canceled, or ALREADY (fully/partially) refunded — the latter
-        # makes a redelivered refund a no-op refusal instead of a second money movement.
+        # makes a redelivered refund a no-op refusal instead of a second money movement. Keep the lock:
+        # a non-captured status is terminal for this reference, so a retry should stay refused.
         return JSONResponse(
             {"ok": False, "reason": f"payment is not refundable in status '{lk.status}'",
              "code": "PAYMENT_NOT_REFUNDABLE", "status": lk.status}, status_code=409)
     if lk.currency and lk.currency.upper() != body.currency.upper():
+        await _release()
         return JSONResponse(
             {"ok": False, "reason": "refund currency does not match the captured payment currency",
              "code": "REFUND_CURRENCY_MISMATCH", "captured_currency": lk.currency.upper()},
             status_code=422)
     if int(lk.amount_minor) <= 0:
+        await _release()
         return JSONResponse(
             {"ok": False, "reason": "captured amount is unknown; refusing to refund an unverifiable ceiling",
              "code": "CAPTURED_AMOUNT_UNKNOWN"}, status_code=422)
     # Compare across possibly-different decimal offsets without floats: a/oa <= b/ob  <=>  a*ob <= b*oa.
     if int(body.amount_minor) * int(lk.offset) > int(lk.amount_minor) * int(body.offset):
+        await _release()
         return JSONResponse(
             {"ok": False, "reason": "refund amount exceeds the captured amount",
              "code": "REFUND_EXCEEDS_CAPTURED", "captured_minor": int(lk.amount_minor),
@@ -236,4 +260,7 @@ async def refund_payment(request: Request, body: _RefundIn,
         adapter.refund, reference_id=body.reference_id, configuration=body.payment_configuration,
         amount_minor=body.amount_minor, currency=body.currency.upper(),
         offset=body.offset, speed=body.speed)
+    if not res.ok:
+        # The gateway refused — no money moved — so release the reservation to allow a corrected retry.
+        await _release()
     return {"ok": res.ok, "refund_id": res.refund_id, "status": res.status, "error": res.error}
