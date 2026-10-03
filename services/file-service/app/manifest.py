@@ -48,12 +48,15 @@ def _backup() -> dict:
 
 
 def build_manifest(
-    settings: Settings, ports: list[dict[str, str]] | None = None
+    settings: Settings, ports: list[dict[str, str]] | None = None,
+    large_uploads_available: bool | None = None,
 ) -> dict[str, Any]:
-    # Large uploads are available only when the wired object store can presign — today that is the
-    # s3 driver. Advertised so a CLIENT can discover the boundary and the endpoint up front (the
-    # inline route's 413 body is generic, per CWE-209), instead of learning it from an error.
-    large_available = settings.OBJECTSTORE_DRIVER == "s3"
+    # file-013: advertise large uploads from the WIRED object store's actual presign capability, not a
+    # driver-name string — so the manifest cannot disagree with the runtime gate (which checks
+    # object_store.supports_presign). Fall back to the driver-name heuristic only if the caller cannot
+    # pass the live flag (e.g. a manifest built without a container).
+    large_available = (settings.OBJECTSTORE_DRIVER == "s3" if large_uploads_available is None
+                       else large_uploads_available)
     return {
         "name": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,

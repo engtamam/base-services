@@ -135,13 +135,19 @@ class UploadSessionStore:
         return await self._store.find(_SESSIONS, {"tenant": tenant}, limit=limit, after=after,
                                       sort=("created", "desc"))
 
-    async def find_stale_pending(self, before_iso: str, limit: int = 100,
-                                 after: str | None = None) -> tuple[list[dict], str | None]:
-        """Pending/scanning sessions older than `before_iso` — the sweeper's page. Filter and bound
-        are pushed into the store; the cost is the page, not the table."""
-        # BOTH pending and scanning: a session stuck in SCANNING (its scan-queue job lost, e.g. a
-        # finalize crash) would otherwise never be released by this sweeper, orphaning it.
-        rows, cursor = await self._store.find(_SESSIONS, {"status": [PENDING, SCANNING]}, limit=limit,
+    async def find_stale(self, statuses: list[str], before_iso: str, limit: int = 100,
+                         after: str | None = None) -> tuple[list[dict], str | None]:
+        """Sessions in `statuses` older than `before_iso` — the sweeper's page. Filter and bound are
+        pushed into the store; the cost is the page, not the table.
+
+        file-008: rows come back `created` ASC, so the FIRST row at or past the cutoff proves every later
+        row is newer too — stop there and return cursor=None, instead of paging through all the fresh
+        (non-stale) pending/scanning sessions on every sweep."""
+        rows, cursor = await self._store.find(_SESSIONS, {"status": list(statuses)}, limit=limit,
                                               after=after, sort=("created", "asc"))
-        stale = [r for r in rows if r.get("created", "") < before_iso]
+        stale = []
+        for r in rows:
+            if r.get("created", "") >= before_iso:
+                return stale, None          # ascending → nothing older remains in any later page
+            stale.append(r)
         return stale, cursor

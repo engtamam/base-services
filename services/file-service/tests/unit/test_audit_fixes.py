@@ -9,7 +9,7 @@ from app.core.file_repository import FileRepository
 from app.core.file_service import FileService
 from app.adapters.scanner.none import NoneScanner
 from app.adapters.signed_url.hmac_signer import HmacSigner
-from app.core.upload_session import SCANNING, UploadSession, UploadSessionStore
+from app.core.upload_session import PENDING, SCANNING, UploadSession, UploadSessionStore
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 40
 
@@ -59,13 +59,17 @@ def test_dedup_falls_through_when_blob_is_gone():
     assert int(run(st.get("blob_refs", first.sha256))["count"]) == 1
 
 
-# ── 05: the stale sweep also releases SCANNING sessions ───────────────────────
-def test_find_stale_pending_includes_scanning():
+# ── 05: a stuck SCANNING session is still reclaimable (file-009: at a longer, lease-aware cutoff) ──
+def test_find_stale_can_target_scanning_sessions():
     st = MemoryDataStore()
     sessions = UploadSessionStore(st)
     run(sessions.create(UploadSession(id="s1", tenant="t1", owner="o", filename="f",
                                       content_type="application/octet-stream", declared_sha256="a" * 64,
                                       declared_size=1, upload_id="u1", part_size=1, part_count=1,
                                       status=SCANNING, created="2020-01-01T00:00:00Z")))
-    stale, _ = run(sessions.find_stale_pending("2030-01-01T00:00:00Z"))
-    assert any(s["id"] == "s1" for s in stale)           # a stuck SCANNING session is swept
+    # file-009: the TTL sweep no longer yanks SCANNING at the short PENDING cutoff — a worker may hold a
+    # live lease — but a genuinely stuck one is reclaimable via an explicit SCANNING query at a longer cutoff.
+    pending_only, _ = run(sessions.find_stale([PENDING], "2030-01-01T00:00:00Z"))
+    assert not any(s["id"] == "s1" for s in pending_only)  # not swept by the PENDING-only sweep
+    scanning, _ = run(sessions.find_stale([SCANNING], "2030-01-01T00:00:00Z"))
+    assert any(s["id"] == "s1" for s in scanning)          # reclaimable at the scanning cutoff

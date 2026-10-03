@@ -93,7 +93,7 @@ class ScanWorker:
         # while jobs sit in flight with nobody holding them.
         await self._queue.reclaim(self._scan_queue)
 
-        n = 0
+        n = failed = 0
         while True:
             job = await self._queue.dequeue(self._scan_queue, lease_seconds=self._lease_seconds)
             if job is None:
@@ -106,12 +106,23 @@ class ScanWorker:
                 continue
             try:
                 await self.process(sid)
-            except Exception:
-                # Hand it straight back instead of waiting out the lease: a known failure should
-                # be retried promptly, and a slow silent one is harder to notice than a fast loud
-                # one. The scan is not marked done, so nothing downstream sees a false verdict.
+            except Exception as exc:
+                # file-012: nack THIS job and keep draining — one poison object must not stall the rest
+                # of the batch for the whole invocation. Handing it back (not acking) retries it promptly
+                # via the lease; the scan is not marked done, so nothing downstream sees a false verdict.
+                # The failure is recorded so a repeatedly-failing object is visible (a dead-letter/attempt
+                # counter on the queue is the follow-up for permanent poison).
                 await self._queue.nack(job)
-                raise
+                failed += 1
+                if self._auditor is not None:
+                    try:
+                        await self._auditor.record(
+                            "file.scan_failed", actor="system",
+                            resource=f"upload:{sid}",
+                            metadata={"error": type(exc).__name__})
+                    except Exception:
+                        pass
+                continue
             await self._queue.ack(job)
             n += 1
         return n

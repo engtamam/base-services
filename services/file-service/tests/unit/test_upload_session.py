@@ -63,7 +63,8 @@ def test_find_stale_pending_filters_by_age_and_status():
     ready_old = _session(status=READY, created="2020-01-01T00:00:00+00:00")
     for s in (old, fresh, ready_old):
         run(store.create(s))
-    stale, _ = run(store.find_stale_pending("2025-01-01T00:00:00+00:00", limit=100))
+    from app.core.upload_session import PENDING
+    stale, _ = run(store.find_stale([PENDING], "2025-01-01T00:00:00+00:00", limit=100))
     ids = {r["id"] for r in stale}
     assert old.id in ids
     assert fresh.id not in ids           # too new

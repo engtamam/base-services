@@ -46,6 +46,7 @@ def create_app() -> FastAPI:
     settings.assert_pii_config_ok()
     settings.assert_cors_config_ok()
     settings.assert_large_scan_ok()   # refuse LARGE_UPLOAD_SCAN=skip (or scan-with-no-scanner) in prod
+    settings.assert_inline_scan_ok()  # refuse unscanned inline uploads in prod unless explicitly opted in
     settings.assert_signed_url_secret_ok()  # hmac signer needs its own secret, not the internal token
     settings.assert_secrets_ok()      # a refresh window must not outlive the rotation window
     configure_logging(settings.SERVICE_NAME, settings.ENV, settings.LOG_LEVEL)

@@ -273,7 +273,11 @@ class Settings(BaseSettings):
     # via a presigned multipart plan. Default = MAX_UPLOAD_BYTES, so a deployment that sets nothing
     # behaves EXACTLY as before (the large path never triggers).
     MAX_INLINE_BYTES: int = 26_214_400       # 25 MiB
-    MAX_OBJECT_BYTES: int = 5_368_709_120    # 5 GiB — hard ceiling for the large path (S3 copy limit)
+    # file-011: finalize promotes staging -> final with a single S3 CopyObject, whose hard limit is 5 GiB.
+    # A ceiling AT that limit lets an upload be accepted and then fail at promote(). Keep the default just
+    # below it so finalize cannot fail at the advertised ceiling. (A deployment that needs larger objects
+    # must move promote() to multipart UploadPartCopy and may then raise this.)
+    MAX_OBJECT_BYTES: int = 5_368_709_119    # 5 GiB - 1 — stay below the S3 single-part CopyObject limit
     MULTIPART_PART_SIZE: int = 8_388_608     # 8 MiB per presigned part (S3 min is 5 MiB per non-final part)
     # How a LARGE upload is scanned. `async` (default): scan after upload, in the worker. `require`:
     # refuse to START a large upload unless a real scanner is wired (fail closed). `skip`: verify the
@@ -289,6 +293,13 @@ class Settings(BaseSettings):
     UPLOAD_SESSION_TTL_SECONDS: int = 3600   # 1 hour
     MAGIC_STRICT: bool = True                # enforce magic-byte vs declared type
     SCANNER_DRIVER: str = "none"             # none | magic | clamav
+    # file-019: the INLINE (small-upload) path also stores whatever bytes it is given when no scanner is
+    # wired. In production that must be a DELIBERATE choice, not the default — set this True to accept
+    # unscanned inline uploads knowingly (symmetric with assert_large_scan_ok for the large path).
+    ALLOW_UNSCANNED_INLINE: bool = False
+    # file-010: the readiness-probe per-check timeout, previously read via getattr with no declared
+    # field (so the knob did nothing). Now a real setting with the 5.0s default health.py used.
+    READYZ_TIMEOUT_SECONDS: float = 5.0
     SIGNED_URL_DRIVER: str = "hmac"          # hmac (our-endpoint token). Presigned bucket GETs are an
                                              # ObjectStore capability, not a signer driver — see below.
     SIGNED_URL_SECRET: str = ""              # required for hmac (falls back to INTERNAL token)
@@ -424,6 +435,17 @@ class Settings(BaseSettings):
                 f"LARGE_UPLOAD_SCAN={self.LARGE_UPLOAD_SCAN!r} with SCANNER_DRIVER='none' is refused "
                 "in production — the scan policy promises a scan but no scanner is configured, so "
                 "large objects are served unscanned. Configure a real SCANNER_DRIVER.")
+
+    def assert_inline_scan_ok(self) -> None:
+        """Boot guard (file-019): the INLINE small-upload path must not store bytes unscanned by
+        accident in production. Symmetric with assert_large_scan_ok — if no scanner is wired, require an
+        explicit, acknowledged opt-out (ALLOW_UNSCANNED_INLINE=True) rather than silently accepting any
+        bytes as the out-of-box posture."""
+        if (self.is_production and self.SCANNER_DRIVER == "none"
+                and not self.ALLOW_UNSCANNED_INLINE):
+            raise ValueError(
+                "SCANNER_DRIVER='none' in production stores inline uploads unscanned — configure a real "
+                "SCANNER_DRIVER, or set ALLOW_UNSCANNED_INLINE=true to accept that posture deliberately.")
 
     def assert_signed_url_secret_ok(self) -> None:
         """Boot guard: the hmac signer must have its OWN secret in production, distinct from the

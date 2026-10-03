@@ -218,16 +218,27 @@ class FileService:
             await self._sessions.save(sess)
         return sess
 
-    async def sweep_stale_sessions(self, cutoff_iso: str, *, limit: int = 100) -> dict[str, Any]:
-        """Abort every pending session older than `cutoff_iso` (its multipart + staging released).
+    async def sweep_stale_sessions(self, cutoff_iso: str, *, scanning_cutoff_iso: str | None = None,
+                                   limit: int = 100) -> dict[str, Any]:
+        """Release abandoned large-upload sessions. Internal, CronJob-driven, paged and bounded.
 
-        Internal, driven by a CronJob. Paged and bounded — a sweeper never scans the whole table.
+        file-009: a PENDING session (presigned, never completed) is safe to abort at the TTL — nothing
+        holds it. A SCANNING session may have a worker holding a VALID lease, and aborting it yanks the
+        staging out from under that worker. So PENDING is swept at `cutoff_iso`, while SCANNING is swept
+        only at the much longer `scanning_cutoff_iso` (sized past the scan lease × attempts) — if given;
+        when absent, SCANNING is left alone entirely rather than risk a live scan.
         """
+        aborted = await self._sweep([PENDING], cutoff_iso, limit)
+        if scanning_cutoff_iso is not None:
+            aborted += await self._sweep([SCANNING], scanning_cutoff_iso, limit)
+        return {"aborted": aborted}
+
+    async def _sweep(self, statuses: list[str], cutoff_iso: str, limit: int) -> int:
         aborted = 0
         cursor = None
         while True:
-            rows, cursor = await self._sessions.find_stale_pending(cutoff_iso, limit=limit,
-                                                                   after=cursor)
+            rows, cursor = await self._sessions.find_stale(statuses, cutoff_iso, limit=limit,
+                                                           after=cursor)
             for r in rows:
                 sess = UploadSession.from_dict(r)
                 await self._discard_staging(sess)
@@ -237,7 +248,7 @@ class FileService:
                 aborted += 1
             if not cursor:
                 break
-        return {"aborted": aborted}
+        return aborted
 
     async def _discard_staging(self, sess: UploadSession) -> None:
         """Remove a session's staging object (and any lingering multipart). Never the content key —

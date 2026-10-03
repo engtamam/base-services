@@ -76,7 +76,8 @@
       "line": 52,
       "scenario": "In strict mode _check only rejects when a signature is KNOWN for the declared type (`if self._strict and expected and ...`). A caller uploading active content declared as `image/svg+xml`, `text/html`, or any type absent from _SIGNATURES bypasses the byte/type match entirely; the only backstop is the four _DANGEROUS prefixes (MZ/ELF/#!/cafebabe), which do not include `<svg onload=...>` or `<html><script>`. Combined with ALLOWED_CONTENT_TYPES defaulting to '' (allow any), an attacker stores an SVG/HTML payload. Inline download does set Content-Disposition: attachment + nosniff + CSP, and presigned GET forces attachment, which mitigates rendering in this origin — but a signed-URL consumer that re-serves the bytes, or an SVG opened directly by a victim, is still exposed.",
       "evidence": "if self._strict and expected and not any(head.startswith(s) for s in expected):  # `expected is None` for svg/html/unlisted types => no check",
-      "recommendation": "Add signatures/explicit rejection for active types (svg, html, xml with DOCTYPE), and when strict + unknown declared type, fail closed rather than allow. Document that ALLOWED_CONTENT_TYPES should be set to a real allowlist in production."
+      "recommendation": "Add signatures/explicit rejection for active types (svg, html, xml with DOCTYPE), and when strict + unknown declared type, fail closed rather than allow. Document that ALLOWED_CONTENT_TYPES should be set to a real allowlist in production.",
+      "status": "fixed"
     },
     {
       "id": "file-006",
@@ -87,7 +88,8 @@
       "line": 37,
       "scenario": "scan_stream accumulates at most 16 header bytes and checks _DANGEROUS/_SIGNATURES against that header only. A large upload whose malicious payload is not at the very start (e.g. a polyglot, a ZIP whose local file header sits after a benign prefix, or an object with leading whitespace/padding before `MZ`) drains the whole stream to the hasher but is scanned only on its first 16 bytes. For the async large path this is the ONLY content inspection when SCANNER_DRIVER=magic, so multi-GB objects are effectively unscanned past byte 16.",
       "evidence": "header = b\"\"\\n        async for chunk in chunks:\\n            if len(header) < 16:\\n                header += chunk[: 16 - len(header)]",
-      "recommendation": "Document magic as a header-only heuristic and require SCANNER_DRIVER=clamav for the large path in production (or gate large uploads on a real content scanner), rather than letting a 16-byte sniff satisfy LARGE_UPLOAD_SCAN=async."
+      "recommendation": "Document magic as a header-only heuristic and require SCANNER_DRIVER=clamav for the large path in production (or gate large uploads on a real content scanner), rather than letting a 16-byte sniff satisfy LARGE_UPLOAD_SCAN=async.",
+      "status": "fixed"
     },
     {
       "id": "file-007",
@@ -110,7 +112,8 @@
       "line": 138,
       "scenario": "find_stale_pending asks the store for status in [pending,scanning] ordered by created asc, then filters `r.get('created','') < before_iso` in Python. sweep_stale_sessions loops until the store cursor is exhausted. Because the staleness bound is not pushed into the store, the loop walks every pending/scanning session in the table each run, not just the stale ones — the cost is O(all in-flight sessions), the exact 'scan wearing a limit's clothes' pattern the codebase elsewhere calls out. A tenant with many concurrent live uploads makes each cron sweep progressively heavier even though almost nothing is actually stale.",
       "evidence": "rows, cursor = await self._store.find(_SESSIONS, {\"status\": [PENDING, SCANNING]}, ...)\\n        stale = [r for r in rows if r.get(\"created\", \"\") < before_iso]",
-      "recommendation": "Since rows come back sorted by created asc, break out of the sweep loop as soon as a returned row has created >= before_iso (all subsequent rows are newer), or push a created<cutoff range predicate into the datastore find contract."
+      "recommendation": "Since rows come back sorted by created asc, break out of the sweep loop as soon as a returned row has created >= before_iso (all subsequent rows are newer), or push a created<cutoff range predicate into the datastore find contract.",
+      "status": "fixed"
     },
     {
       "id": "file-009",
@@ -121,7 +124,8 @@
       "line": 211,
       "scenario": "sweep_stale_sessions treats any pending OR scanning session older than UPLOAD_SESSION_TTL_SECONDS (3600s) as stale and calls _discard_staging + sets ABORTED. FILE_SCAN_LEASE_SECONDS is 900s, but a legitimately slow multi-GB scan (or a job repeatedly re-leased/retried) can still be actively SCANNING after an hour. The sweeper then aborts the multipart and deletes the staging object while the ScanWorker is streaming it, causing the in-flight scan to fail mid-read. finalize then no-ops (status no longer SCANNING), so the upload is silently lost and must be redone, with no clear reason surfaced to the client beyond 'aborted/expired'.",
       "evidence": "sess.status = ABORTED\\n                sess.reason = \"expired\"  (applied to SCANNING sessions too, via find_stale_pending returning [PENDING, SCANNING])",
-      "recommendation": "Only auto-abort PENDING sessions in the TTL sweep; for stuck SCANNING sessions use a separate, longer, lease-aware timeout (e.g. > FILE_SCAN_LEASE_SECONDS * max_attempts) so the sweep never yanks staging from a worker still within its lease."
+      "recommendation": "Only auto-abort PENDING sessions in the TTL sweep; for stuck SCANNING sessions use a separate, longer, lease-aware timeout (e.g. > FILE_SCAN_LEASE_SECONDS * max_attempts) so the sweep never yanks staging from a worker still within its lease.",
+      "status": "fixed"
     },
     {
       "id": "file-010",
@@ -132,7 +136,8 @@
       "line": 65,
       "scenario": "readyz does `getattr(get_settings(), 'READYZ_TIMEOUT_SECONDS', _DEFAULT_READYZ_TIMEOUT)`. Settings (config.py) has no READYZ_TIMEOUT_SECONDS field, so the getattr always falls through to the 5.0 default. An operator who sets READYZ_TIMEOUT_SECONDS in the environment to widen the probe budget sees no effect (env extra='ignore' silently drops it), and there is no error. This is both a declared-intent-vs-reality gap and the getattr-default anti-pattern the codebase warns about (defensive-access-hides-bugs).",
       "evidence": "timeout = getattr(get_settings(), \"READYZ_TIMEOUT_SECONDS\", _DEFAULT_READYZ_TIMEOUT)",
-      "recommendation": "Add READYZ_TIMEOUT_SECONDS as a real Settings field (with the 5.0 default) and read it directly, or remove the getattr and document that the timeout is a fixed constant."
+      "recommendation": "Add READYZ_TIMEOUT_SECONDS as a real Settings field (with the 5.0 default) and read it directly, or remove the getattr and document that the timeout is a fixed constant.",
+      "status": "fixed"
     },
     {
       "id": "file-011",
@@ -143,7 +148,8 @@
       "line": 210,
       "scenario": "MAX_OBJECT_BYTES defaults to 5_368_709_120 (5 GiB) and begin_large_upload accepts sizes up to and including it. promote() uses s3.copy_object, whose single-operation limit is 5 GiB; an object exactly at 5 GiB (or an S3 implementation that treats the boundary as exclusive) makes copy_object raise, so a clean, fully-scanned upload fails at finalize with the bytes stranded on the staging key. The comment even acknowledges 'copy_object handles objects up to 5 GiB' but the configured ceiling is set AT that boundary rather than below it.",
       "evidence": "MAX_OBJECT_BYTES: int = 5_368_709_120    # 5 GiB — hard ceiling for the large path (S3 copy limit)  <-> await s3.copy_object(...)",
-      "recommendation": "Either lower the default MAX_OBJECT_BYTES safely below the 5 GiB single-copy limit, or use a multipart copy (UploadPartCopy) in promote() for large objects so finalize does not fail at the advertised ceiling."
+      "recommendation": "Either lower the default MAX_OBJECT_BYTES safely below the 5 GiB single-copy limit, or use a multipart copy (UploadPartCopy) in promote() for large objects so finalize does not fail at the advertised ceiling.",
+      "status": "fixed"
     },
     {
       "id": "file-012",
@@ -154,7 +160,8 @@
       "line": 107,
       "scenario": "In the drain loop, if process(sid) raises, the worker nacks that job and then `raise`, aborting the entire while loop. Every other job already waiting in the scan queue is left unprocessed until the next cron tick. A single poison/transiently-failing object therefore delays scanning (and thus availability) of all other pending large uploads in that batch. The docstring frames the nack as 'retry promptly', but re-raising defeats promptness for the siblings.",
       "evidence": "except Exception:\\n                await self._queue.nack(job)\\n                raise",
-      "recommendation": "Catch the per-job exception, nack that single job, record/telemeter it, and continue the loop so one bad object does not stall the whole batch; surface repeated failures via a dead-letter or attempt counter instead of aborting the run."
+      "recommendation": "Catch the per-job exception, nack that single job, record/telemeter it, and continue the loop so one bad object does not stall the whole batch; surface repeated failures via a dead-letter or attempt counter instead of aborting the run.",
+      "status": "fixed"
     },
     {
       "id": "file-013",
@@ -165,7 +172,8 @@
       "line": 56,
       "scenario": "build_manifest lists /internal/files/{file_id}/signed-url as a live internal endpoint, but that route is broken (file-001), so a platform consumer that discovers and calls it via the manifest gets a 500. Separately, large_uploads.available is computed as `settings.OBJECTSTORE_DRIVER == 's3'` — a string check, not the real capability gate FileService uses (`store.supports_presign and sessions is not None`). If OBJECTSTORE_DRIVER is an s3-compatible alias, or presign is unavailable for another reason, the manifest advertises large uploads that initiate_large_upload will then reject with 501.",
       "evidence": "large_available = settings.OBJECTSTORE_DRIVER == \"s3\"",
-      "recommendation": "Fix file-001, and derive large_uploads.available from the actual object_store.supports_presign flag on the wired container rather than a driver-name string comparison so the manifest cannot disagree with the runtime gate."
+      "recommendation": "Fix file-001, and derive large_uploads.available from the actual object_store.supports_presign flag on the wired container rather than a driver-name string comparison so the manifest cannot disagree with the runtime gate.",
+      "status": "fixed"
     },
     {
       "id": "file-014",
@@ -232,7 +240,8 @@
       "line": 291,
       "scenario": "Defaults are SCANNER_DRIVER='none' and ALLOWED_CONTENT_TYPES='' (allow any). The large path has a production boot guard (assert_large_scan_ok) that refuses async/require+none, but the SMALL inline path (FileService.upload -> NoneScanner) has no equivalent guard: in production a deployment that never set SCANNER_DRIVER stores arbitrary content (including the _DANGEROUS types magic would have caught) with no scan and no type restriction. The large path is fenced; the small path is not.",
       "evidence": "SCANNER_DRIVER: str = \"none\"   ...   ALLOWED_CONTENT_TYPES: str = \"\"          # comma list; empty = allow any",
-      "recommendation": "Add a production boot guard requiring a real SCANNER_DRIVER (or an explicit acknowledged opt-out) for the inline path too, symmetric with assert_large_scan_ok, so 'no scanning at all' cannot be the accidental production posture."
+      "recommendation": "Add a production boot guard requiring a real SCANNER_DRIVER (or an explicit acknowledged opt-out) for the inline path too, symmetric with assert_large_scan_ok, so 'no scanning at all' cannot be the accidental production posture.",
+      "status": "fixed"
     },
     {
       "id": "file-020",

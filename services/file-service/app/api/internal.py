@@ -69,7 +69,10 @@ async def internal_manifest(
 ) -> dict:
     container = getattr(request.app.state, "container", None)
     ports = container.describe() if container is not None else []
-    manifest = build_manifest(settings, ports=ports)
+    # file-013: derive large-upload availability from the live object store's presign capability.
+    large_available = (bool(getattr(container.object_store, "supports_presign", False))
+                       if container is not None else None)
+    manifest = build_manifest(settings, ports=ports, large_uploads_available=large_available)
     guard = getattr(request.app.state, "cwe_guard", None)
     if guard is not None:
         manifest["security"] = {"cwe_guard": guard.report()}
@@ -152,9 +155,13 @@ async def sweep_uploads(request: Request) -> dict:
     from app.api.v1.files import build_files
     s = get_settings()
     files = await build_files(request)
-    cutoff = (_dt.datetime.now(_dt.timezone.utc)
-              - _dt.timedelta(seconds=s.UPLOAD_SESSION_TTL_SECONDS)).isoformat()
-    return await files.sweep_stale_sessions(cutoff)
+    now = _dt.datetime.now(_dt.timezone.utc)
+    cutoff = (now - _dt.timedelta(seconds=s.UPLOAD_SESSION_TTL_SECONDS)).isoformat()
+    # file-009: a SCANNING session is only reclaimed well past the scan lease (× a few attempts), so the
+    # sweep never yanks staging from a worker still inside a valid lease.
+    scan_cutoff = (now - _dt.timedelta(
+        seconds=s.UPLOAD_SESSION_TTL_SECONDS + s.FILE_SCAN_LEASE_SECONDS * 3)).isoformat()
+    return await files.sweep_stale_sessions(cutoff, scanning_cutoff_iso=scan_cutoff)
 
 
 @router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])
