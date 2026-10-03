@@ -47,6 +47,14 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "resource": "verification",
     },
     {
+        "action": "identity.check_pending",
+        "source": "system",
+        "critical": False,
+        "resource": "verification",
+        "why": "verification-015: an async identity check that awaits a provider prompt is an ATTEMPT "
+               "that must be witnessed, so an initiated check that later lapses still left a trace",
+    },
+    {
         "action": "subject.erased",
         "source": "internal",
         "critical": True,

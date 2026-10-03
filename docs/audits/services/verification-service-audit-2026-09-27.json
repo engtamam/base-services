@@ -132,7 +132,8 @@
       "line": 299,
       "scenario": "submit_claim's docstring says it is rate-limited because 'verification calls cost money at the provider, and an unthrottled endpoint is both a bill and an enumeration oracle.' But with RATELIMIT_ROUTES empty (the default) the route gets the default class RATELIMIT_MAX=100 per RATELIMIT_WINDOW_SECONDS=60 per subject. 100 provider-billed identity checks per minute per authenticated subject is neither a brute-force nor a cost defense; the tight budget the endpoint needs exists only if an operator remembers to add a route class. A shipped-secure default should classify the claims-submit path strictly.",
       "evidence": "RATELIMIT_MAX: int = 100\n    RATELIMIT_WINDOW_SECONDS: int = 60\n    RATELIMIT_ROUTES: str = \"\"                  # JSON: [...]  (empty by default)",
-      "recommendation": "Ship a default RATELIMIT_ROUTES entry (or a dedicated class) for /api/v1/verification/claims with a low limit/window, so the money+enumeration endpoint is throttled without operator action."
+      "recommendation": "Ship a default RATELIMIT_ROUTES entry (or a dedicated class) for /api/v1/verification/claims with a low limit/window, so the money+enumeration endpoint is throttled without operator action.",
+      "status": "fixed"
     },
     {
       "id": "verification-010",
@@ -155,7 +156,8 @@
       "line": 198,
       "scenario": "_announce() wraps registry.remember() in try/except: pass 'so a registry write failing must not un-verify a genuine identity'. But the comment claims 'the grant side refuses rather than assuming' — nothing here records or counts the gap. If the identity_seen write fails, the identity is VERIFIED but never recorded as seen, so onboarding's once-per-identity check reads first_seen=True on a repeat and the welcome grant can be collected again — the exact fraud the registry exists to stop — with no telemetry, log, or audit trail of the miss.",
       "evidence": "try:\n                await self._registry.remember(record.claim_ref, self._clock.now())\n            except Exception:\n                pass",
-      "recommendation": "Emit a telemetry event / warning log on the remember() failure (as the auditor does for gaps), so a missing anti-abuse key is observable rather than silent."
+      "recommendation": "Emit a telemetry event / warning log on the remember() failure (as the auditor does for gaps), so a missing anti-abuse key is observable rather than silent.",
+      "status": "fixed"
     },
     {
       "id": "verification-012",
@@ -178,7 +180,8 @@
       "line": 92,
       "scenario": "The two-eyes accumulation branch is guarded by 'if approve and self._two_eyes'. A refusal (approve=False) skips it entirely and settles the verification to REFUSED on the first reviewer, even when VERIFY_TWO_EYES is on. In a regulated onboarding where the platform decided one person must not grant trust alone, one person can still DENY trust alone — a denial is also a consequential, appealable decision, and the control is silently one-sided. This branch is untested (test_two_eyes only exercises approvals).",
       "evidence": "if approve and self._two_eyes:\n                ...\n            record.evidence = Evidence(...)\n            record.verdict = VERIFIED if approve else REFUSED   # single-reviewer refuse settles immediately",
-      "recommendation": "Decide and document whether two-eyes governs refusals too; if it should, apply the same two-reviewer tally to the refuse path, and add a test for single-reviewer-refuse-under-two-eyes."
+      "recommendation": "Decide and document whether two-eyes governs refusals too; if it should, apply the same two-reviewer tally to the refuse path, and add a test for single-reviewer-refuse-under-two-eyes.",
+      "status": "fixed"
     },
     {
       "id": "verification-014",
@@ -189,7 +192,8 @@
       "line": 65,
       "scenario": "readyz() does getattr(get_settings(), 'READYZ_TIMEOUT_SECONDS', _DEFAULT_READYZ_TIMEOUT). No READYZ_TIMEOUT_SECONDS field exists on the Settings class (config.py), so the getattr always falls through to the hardcoded 5.0 and setting the env var has no effect. An operator tuning the readiness timeout for a slow dependency (the very case the concurrent-probe comment describes) silently changes nothing.",
       "evidence": "timeout = getattr(get_settings(), \"READYZ_TIMEOUT_SECONDS\", _DEFAULT_READYZ_TIMEOUT)",
-      "recommendation": "Declare READYZ_TIMEOUT_SECONDS on Settings (or drop the getattr and document the fixed value); a knob referenced in code but absent from config is a false promise."
+      "recommendation": "Declare READYZ_TIMEOUT_SECONDS on Settings (or drop the getattr and document the fixed value); a knob referenced in code but absent from config is a false promise.",
+      "status": "fixed"
     },
     {
       "id": "verification-015",
@@ -200,7 +204,8 @@
       "line": 205,
       "scenario": "_announce() audits only VERIFIED / REFUSED / ERROR. When a provider answers PENDING (Nafath-style prompt pushed to a phone), no auditor.record is emitted at all. The initiation of an identity check — who asked, for which claim, against which provider — is exactly the fraud-monitoring signal (PCI-DSS 10.2 / NIST AU-2 the file cites for refusals), yet a pending check that later lapses via the sweep produces zero audit trail of ever having been attempted.",
       "evidence": "if record.verdict == VERIFIED:\n                await self._auditor.record(\"identity.verified\", ...)\n            elif record.verdict == REFUSED:\n                ...\n            elif record.verdict == ERROR:\n                ...   # no branch for PENDING",
-      "recommendation": "Emit a non-critical 'identity.check_pending' (declared) audit event when a check is initiated as PENDING, so an attempt is witnessed even if it later lapses."
+      "recommendation": "Emit a non-critical 'identity.check_pending' (declared) audit event when a check is initiated as PENDING, so an attempt is witnessed even if it later lapses.",
+      "status": "fixed"
     },
     {
       "id": "verification-016",

@@ -89,10 +89,11 @@ class ReviewService:
             now = self._clock.now()
             prior = list(record.provider_state.get("reviewers") or [])
 
-            if approve and self._two_eyes:
-                # The control is TWO PEOPLE, not two clicks. Written as `reviewer not in prior` alone,
-                # a reviewer approving a second time fell through to the decision — one pair of eyes
-                # satisfying a two-eyes rule, which is the whole thing it exists to prevent.
+            if self._two_eyes:
+                # verification-013: two-eyes governs BOTH directions. A single reviewer refusing under a
+                # two-eyes policy is just as unilateral as approving alone — a refusal is an appealable,
+                # trust-affecting decision — so the same two-distinct-reviewer tally applies to refuse.
+                # The control is TWO PEOPLE, not two clicks: a reviewer deciding twice does not satisfy it.
                 if reviewer in prior or not prior:
                     if reviewer not in prior:
                         prior = prior + [reviewer]

@@ -300,7 +300,13 @@ class Settings(BaseSettings):
     RATELIMIT_WINDOW_SECONDS: int = 60
     RATELIMIT_DEGRADE: str = "local"            # local | closed | open
     RATELIMIT_KEY_PARTS: str = "subject,ip"     # subject | ip | tenant | route (comma list)
-    RATELIMIT_ROUTES: str = ""                  # JSON: [{"prefix","class","limit","window_s","cost"}]
+    # verification-009: ship a STRICT default budget for the money+enumeration claims endpoint so it is
+    # throttled out of the box without operator action. An operator may override the whole list.
+    RATELIMIT_ROUTES: str = ('[{"prefix": "/api/v1/verification/claims", "class": "claims", '
+                             '"limit": 10, "window_s": 60, "cost": 1}]')
+    # verification-014: a real, declared readiness per-check timeout (was read via getattr with no field,
+    # so the knob did nothing). 5.0s default, matching the old fallback.
+    READYZ_TIMEOUT_SECONDS: float = 5.0
     RATELIMIT_COUNT_STATUSES: str = ""          # e.g. "401" for a login surface; comma list
 
     TELEMETRY_DRIVER: str = "stdout"

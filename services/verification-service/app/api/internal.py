@@ -174,7 +174,8 @@ async def resolve_verification(request: Request, body: ResolveIn) -> dict:
         verifiers=await request.app.state.provider_pool.get(),
         clock=c.clock, registry=IdentityRegistry(c.datastore), pii_salt=s.PII_SALT,
         ttl_days=s.verify_ttl_days, pending_ttl=s.VERIFY_PENDING_TTL_SECONDS,
-        auditor=request.app.state.auditor, event_bus=c.event_bus)
+        auditor=request.app.state.auditor, event_bus=c.event_bus,
+        telemetry=getattr(c, "telemetry", None))
     try:
         record = await svc.resolve(body.verification_id, verified=body.verified,
                                    reference=body.reference, detail=body.detail)

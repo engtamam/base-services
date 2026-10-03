@@ -18,6 +18,7 @@ Four rules shape this file, and each exists because getting it wrong is silent.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from app.core.identity_ref import claim_ref
@@ -26,6 +27,7 @@ from app.core.models import (ERROR, EXPIRED, PENDING, REFUSED, VERIFIED, Evidenc
 from app.ports import verifier as vp
 
 DAY_SECONDS = 86400
+_log = logging.getLogger(__name__)
 
 
 class UnsupportedClaim(ValueError):
@@ -40,7 +42,7 @@ class UnsupportedClaim(ValueError):
 class VerificationService:
     def __init__(self, *, store, verifiers: dict, clock, pii_salt: str,
                  ttl_days: dict[str, int] | None = None, pending_ttl: int = 900,
-                 registry=None, auditor=None, event_bus=None) -> None:
+                 registry=None, auditor=None, event_bus=None, telemetry=None) -> None:
         self._store = store
         # The durable record of WHICH identities have ever been verified. Without it the
         # anti-abuse key does not exist and a welcome gift is farmable by re-registering.
@@ -52,6 +54,7 @@ class VerificationService:
         self._pending_ttl = pending_ttl
         self._auditor = auditor
         self._bus = event_bus
+        self._telemetry = telemetry
 
     # ── asking ───────────────────────────────────────────────────────────────
     async def verify(self, *, tenant: str, subject: str, claim_type: str, value: str,
@@ -262,10 +265,20 @@ class VerificationService:
             # deleting the tenant and signing up again.
             try:
                 await self._registry.remember(record.claim_ref, self._clock.now())
-            except Exception:
+            except Exception as exc:
                 # A registry write failing must not un-verify a genuine identity — but it does mean
                 # the anti-abuse key is missing, so the grant side refuses rather than assuming.
-                pass
+                # verification-011: make that MISS observable — a silently-missing anti-abuse key on a
+                # VERIFIED identity is exactly the gap this registry exists to close.
+                if self._telemetry is not None:
+                    try:
+                        self._telemetry.event("verification.registry_remember_failed",
+                                              {"tenant": record.tenant, "claim_type": record.claim_type,
+                                               "error": type(exc).__name__})
+                    except Exception:
+                        pass
+                _log.warning("verification registry.remember failed for a VERIFIED identity "
+                             "(anti-abuse key missing): %s", type(exc).__name__)
 
         if self._auditor is not None:
             # A refusal and a provider error are recorded NON-critically: an identity check that
@@ -283,6 +296,14 @@ class VerificationService:
                     resource=f"{record.claim_type}:{record.id}",
                     metadata={"provider": outcome.provider,
                               "detail": str(record.evidence.get("detail", ""))})
+            elif record.verdict == PENDING:
+                # verification-015: an async check that awaits a phone prompt is an ATTEMPT that must be
+                # witnessed — otherwise an initiated check that later lapses leaves no trace at all.
+                # Non-critical (a down log must not block starting the check).
+                await self._auditor.record(
+                    "identity.check_pending", actor=record.subject, tenant=record.tenant,
+                    resource=f"{record.claim_type}:{record.id}",
+                    metadata={"provider": outcome.provider, "reference": outcome.reference})
         if self._bus is not None:
             try:
                 await self._bus.publish("verification.settled", {

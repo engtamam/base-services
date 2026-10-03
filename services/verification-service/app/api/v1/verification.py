@@ -45,7 +45,8 @@ async def build_service(request: Request, tenant: str = "") -> VerificationServi
         registry=IdentityRegistry(c.datastore),
         pii_salt=s.PII_SALT, ttl_days=s.verify_ttl_days,
         pending_ttl=s.VERIFY_PENDING_TTL_SECONDS,
-        auditor=request.app.state.auditor, event_bus=c.event_bus)
+        auditor=request.app.state.auditor, event_bus=c.event_bus,
+        telemetry=getattr(c, "telemetry", None))
 
 
 def build_review(request: Request) -> ReviewService:
