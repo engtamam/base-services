@@ -1892,7 +1892,7 @@
     },
     "/api/v1/otp/verify": {
       "post": {
-        "description": "Consume a code. Every failure \u2014 never issued, expired, wrong, exhausted \u2014 collapses to ONE\ngeneric 400 so a caller cannot distinguish 'wrong code' from 'no code for this identifier'.",
+        "description": "Consume a code. Every failure \u2014 never issued, expired, wrong, exhausted \u2014 collapses to ONE\ngeneric 400 so a caller cannot distinguish 'wrong code' from 'no code for this identifier'.\n\nidentity-012: this standalone consuming endpoint is scoped to the 'verify' purpose ONLY. A login or\nreset code is single-use and has a COMBINED verify-and-act endpoint (/auth/*); exposing a bare\nconsuming verify for those purposes let a caller SPEND a code the user still needed for the real\naction. Those purposes are refused here \u2014 verify-and-act is the only place they are consumed.",
         "operationId": "verify_otp_api_v1_otp_verify_post",
         "requestBody": {
           "content": {

@@ -39,6 +39,13 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "critical": False,
     },
     {
+        # file-012: a scan job that failed to process (and was nacked to retry) — recorded so a
+        # repeatedly-failing object is visible rather than silently stalling.
+        "action": "file.scan_failed",
+        "source": "system",
+        "critical": False,
+    },
+    {
         "action": "file.signed_url_issued",
         "source": "user",
         "critical": True,
