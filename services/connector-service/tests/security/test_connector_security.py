@@ -117,21 +117,36 @@ def test_token_and_revoke_urls_are_ssrf_validated_at_registration():
             ssrf.validate(url, require_https=False, allow_private=False, allowed_hosts=())
 
 
-def test_connect_rejects_another_tenants_spec():
-    """IDOR: a connection may only use a spec in the caller's own tenant."""
-    import asyncio
+def _token(tenant: str) -> str:
+    """An HS256 bearer for `tenant` with the connectors.manage capability (matches _make_app's secret)."""
+    import time
 
-    from app.adapters.datastore.memory import MemoryDataStore
-    from app.core.models import ProviderSpec, new_id
-    from app.core.stores import SpecStore
+    import jwt
+    return jwt.encode({"sub": f"u@{tenant}", "tenant": tenant, "caps": ["connectors.manage"],
+                       "exp": int(time.time()) + 3600},
+                      "h" * 40, algorithm="HS256")
 
-    async def go():
-        st = MemoryDataStore()
-        spec = ProviderSpec(id=new_id("spec_"), tenant="shop_a", name="hub")
-        await SpecStore(st).save(spec)
-        # the check the connect route performs: fetch by id, compare tenant
-        got = await SpecStore(st).get(spec.id)
-        assert got is not None and got.tenant == "shop_a"
-        # a caller from shop_b would fail the `got.tenant != caller_tenant` guard
-        assert got.tenant != "shop_b"
-    asyncio.run(go())
+
+def test_connect_rejects_another_tenants_spec(client):
+    """IDOR, exercised through the ACTUAL route (connector-011): shop_a registers a spec, shop_b tries to
+    connect with that spec_id, and the endpoint must answer 404 SPEC_NOT_FOUND. Removing the guard in
+    connect() turns this red — unlike the old test, which re-implemented the check and tested nothing."""
+    a = {"Authorization": f"Bearer {_token('shop_a')}"}
+    b = {"Authorization": f"Bearer {_token('shop_b')}"}
+
+    made = client.post("/api/v1/connectors/specs",
+                       json={"name": "hub", "provider": "recording"}, headers=a)
+    assert made.status_code == 201, made.text
+    spec_id = made.json()["id"]
+
+    # shop_b cannot connect using shop_a's spec — it is not in shop_b's tenant.
+    resp = client.post("/api/v1/connectors/connect",
+                       json={"provider": "recording", "spec_id": spec_id,
+                             "code": "x", "redirect_uri": "https://app.example/cb"}, headers=b)
+    assert resp.status_code == 404      # the tenant guard rejects another tenant's spec_id
+
+    # control: shop_a (the owner) passes the tenant guard — it does NOT 404 on the same spec_id.
+    ok = client.post("/api/v1/connectors/connect",
+                     json={"provider": "recording", "spec_id": spec_id,
+                           "code": "x", "redirect_uri": "https://app.example/cb"}, headers=a)
+    assert ok.status_code != 404

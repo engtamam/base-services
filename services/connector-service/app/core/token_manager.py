@@ -31,6 +31,10 @@ from app.ports.connector_provider import CredentialInvalid
 _LOCKS: dict[str, asyncio.Lock] = {}
 
 
+class BumpFailed(Exception):
+    """A cache generation bump failed, so cached-token revocation is NOT guaranteed (connector-008)."""
+
+
 def evict_lock(connection_id: str) -> None:
     """Drop a connection's refresh lock when it is disconnected. Without this the process-wide table
     grows one asyncio.Lock per connection id for the life of the process and never shrinks — an
@@ -40,7 +44,7 @@ def evict_lock(connection_id: str) -> None:
 
 class TokenManager:
     def __init__(self, *, connections: ConnectionStore, provider, clock, seal_key: str,
-                 cache=None, cache_ttl: int = 60, refresh_skew: int = 60) -> None:
+                 cache=None, cache_ttl: int = 60, refresh_skew: int = 60, telemetry=None) -> None:
         self._conns = connections
         self._provider = provider
         self._clock = clock
@@ -48,6 +52,7 @@ class TokenManager:
         self._cache = cache
         self._ttl = cache_ttl
         self._skew = refresh_skew
+        self._telemetry = telemetry
 
     # ── generation cache ───────────────────────────────────────────────────────
     async def _gen(self, tenant: str) -> str:
@@ -58,15 +63,27 @@ class TokenManager:
         except Exception:
             return "0"
 
-    async def bump(self, tenant: str) -> None:
-        """Any credential/connection change → cached tokens are dead immediately."""
+    async def bump(self, tenant: str, *, strict: bool = False) -> None:
+        """Any credential/connection change → cached tokens are dead immediately.
+
+        connector-008: a swallowed failure here defeats the immediate-revocation guarantee — a
+        disconnected connection keeps serving its cached token for the whole TTL. A failed bump is now
+        telemetered, and `strict` (the disconnect path) re-raises so the caller can surface it rather
+        than silently believing revocation took effect."""
         if self._cache is None:
             return
         try:
             g = await self._cache.get(f"conngen:{tenant}")
             await self._cache.set(f"conngen:{tenant}", str(int(g or 0) + 1), None)
-        except Exception:
-            pass
+        except Exception as exc:
+            if self._telemetry is not None:
+                try:
+                    self._telemetry.event("connection.bump_failed",
+                                          {"tenant": tenant, "error": type(exc).__name__})
+                except Exception:
+                    pass
+            if strict:
+                raise BumpFailed("cache generation bump failed") from exc
 
     async def _cache_get(self, key: str):
         if self._cache is None:

@@ -11,9 +11,35 @@ from typing import Any
 
 from app.adapters.connector_http import basic_auth, bearer, get_json, post_form, post_json
 from app.core.mapping import get_path
-from app.ports.connector_provider import CredentialInvalid, Page, Tokens
+from app.ports.connector_provider import (CredentialInvalid, Page, ProviderUnavailable,
+                                          RateLimited, Tokens)
 
 _BASE = "https://slack.com/api"
+
+# connector-012: a Slack {"ok": false} is NOT automatically an auth failure. Classify the error code so
+# the sync engine reacts correctly — only a genuine credential error condemns the connection (NEEDS_REAUTH),
+# a rate limit backs off, and a transient error is retried/dead-lettered rather than forcing re-auth.
+_AUTH_ERRORS = frozenset({"invalid_auth", "not_authed", "token_revoked", "token_expired",
+                          "account_inactive", "no_permission", "missing_scope", "ekm_access_denied"})
+_TRANSIENT_ERRORS = frozenset({"internal_error", "fatal_error", "service_unavailable",
+                               "request_timeout", "server_error"})
+
+
+def _raise_slack_error(body: dict, headers: dict | None = None) -> None:
+    """Map a Slack `{"ok": false, "error": ...}` body to the right port exception."""
+    err = str(body.get("error", "unknown"))
+    if err in _AUTH_ERRORS:
+        raise CredentialInvalid(f"slack auth error: {err}")
+    if err == "ratelimited":
+        ra = (headers or {}).get("Retry-After") or (headers or {}).get("retry-after")
+        try:
+            retry_after = float(ra) if ra is not None else None
+        except (TypeError, ValueError):
+            retry_after = None
+        raise RateLimited(f"slack rate limited: {err}", retry_after)
+    # Everything else (transient OR an unknown per-call error) is NOT a credential failure. On a pull it
+    # must not mark the connection NEEDS_REAUTH; on a push the engine dead-letters the record.
+    raise ProviderUnavailable(f"slack error: {err}")
 
 
 class SlackConnector:
@@ -47,7 +73,7 @@ class SlackConnector:
         url = f"{spec.get('base_url', _BASE).rstrip('/')}/{resource}?{urllib.parse.urlencode(params)}"
         _c, body, _h = get_json(url, {"Authorization": bearer(access_token)})
         if not body.get("ok", False):
-            raise CredentialInvalid(f"slack error: {body.get('error', 'unknown')}")
+            _raise_slack_error(body, _h)
         records = get_path(body, spec.get("records_path", "channels")) or []
         return Page(records=records if isinstance(records, list) else [],
                     next_cursor=str(get_path(body, "response_metadata.next_cursor") or ""))
@@ -56,7 +82,7 @@ class SlackConnector:
         url = f"{spec.get('base_url', _BASE).rstrip('/')}/{resource}"
         _c, body, _h = post_json(url, record, {"Authorization": bearer(access_token)})
         if not body.get("ok", False):
-            raise CredentialInvalid(f"slack error: {body.get('error', 'unknown')}")
+            _raise_slack_error(body, _h)
         return body
 
     def revoke(self, *, access_token, spec) -> bool:

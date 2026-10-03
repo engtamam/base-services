@@ -59,7 +59,23 @@ def _pinned_opener(target: _ssrf.Target) -> urllib.request.OpenerDirector:
         def http_open(self, req):
             return self.do_open(_PinnedHTTP, req)
 
-    return urllib.request.build_opener(_HTTPSHandler, _HTTPHandler)
+    # connector-006: never follow a redirect. The opener is PINNED to the one validated ip, so a
+    # 3xx Location would either be fetched at the wrong (pinned) address or, worse, re-resolved to an
+    # un-validated host — the DNS-rebind/SSRF hole this adapter exists to close. Refuse it outright;
+    # a provider that needs a different URL must be configured with that URL.
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            raise _RedirectRefused(f"redirect refused ({code})")
+
+    return urllib.request.build_opener(_HTTPSHandler, _HTTPHandler, _NoRedirect)
+
+
+class _RedirectRefused(Exception):
+    """A provider response tried to redirect; the pinned opener refuses (connector-006)."""
+
+
+class ResponseTooLarge(Exception):
+    """The provider response exceeded MAX_BYTES (connector-007)."""
 
 
 def _request(url: str, data: bytes | None, headers: dict[str, str], method: str) -> tuple[int, dict, dict]:
@@ -75,9 +91,9 @@ def _request(url: str, data: bytes | None, headers: dict[str, str], method: str)
     try:
         # PIN to the validated ip — urllib's default opener would re-resolve the host (the rebind hole).
         with _pinned_opener(target).open(req, timeout=TIMEOUT) as resp:  # nosec B310 - pinned to a validated public ip
-            return resp.status, _parse(resp.read(MAX_BYTES)), dict(resp.getheaders())
+            return resp.status, _parse(_read_capped(resp), strict=True), dict(resp.getheaders())
     except urllib.error.HTTPError as exc:
-        body = _parse(exc.read(MAX_BYTES))
+        body = _parse(_read_capped(exc))
         headers_out = dict(exc.headers or {})
         if exc.code in (401, 403):
             raise CredentialInvalid(f"provider rejected credential ({exc.code})") from None
@@ -87,8 +103,24 @@ def _request(url: str, data: bytes | None, headers: dict[str, str], method: str)
         if exc.code >= 500:
             raise ProviderUnavailable(f"provider error {exc.code}") from None
         return exc.code, body, headers_out
+    except ResponseTooLarge:
+        raise ProviderUnavailable("response too large") from None
+    except _RedirectRefused as exc:
+        raise ProviderUnavailable(str(exc)) from None
+    except (CredentialInvalid, RateLimited, ProviderUnavailable):
+        raise
     except Exception as exc:
         raise ProviderUnavailable(type(exc).__name__) from None   # secret-free
+
+
+def _read_capped(resp) -> bytes:
+    # connector-007: read one byte PAST the cap. If it is there, the body was truncated — raise rather
+    # than silently returning a half body that _parse would turn into {} (an oversized response then
+    # looked like an empty/clean one). A real HTTPRedirectHandler-wrapped error reader works the same.
+    raw = resp.read(MAX_BYTES + 1)
+    if len(raw) > MAX_BYTES:
+        raise ResponseTooLarge()
+    return raw
 
 
 def _to_float(v):
@@ -112,11 +144,19 @@ def get_json(url: str, headers: dict[str, str] | None = None) -> tuple[int, dict
     return _request(url, None, headers or {}, "GET")
 
 
-def _parse(raw: bytes) -> dict:
+def _parse(raw: bytes, *, strict: bool = False) -> dict:
+    # connector-007: an EMPTY body is a legitimate "no content" → {}. A non-empty body that does not
+    # parse is a different fact: on the success path (strict) that is a malformed provider response,
+    # not an empty one, so raise rather than masquerade as {}. Error-path bodies stay lenient (a 4xx
+    # may legitimately carry HTML), best-effort for diagnostics.
+    if not raw:
+        return {}
     try:
         val = _json.loads(raw.decode("utf-8", "replace"))
         return val if isinstance(val, dict) else {"_list": val}
     except Exception:
+        if strict:
+            raise ProviderUnavailable("invalid provider response (not JSON)") from None
         return {}
 
 

@@ -88,7 +88,8 @@
       "line": 62,
       "scenario": "_pinned_opener uses urllib.request.build_opener(...), which includes the default HTTPRedirectHandler. A 3xx from the provider is followed automatically. The socket is pinned to the originally validated IP (which limits classic SSRF), but the redirected request is never re-run through _ssrf.validate, the allowed_hosts allow-list is not re-checked against the new URL, and the Authorization/bearer header the caller passed can be replayed onto the redirect target's path. A malicious or compromised provider spec host can bounce the request to arbitrary paths and cause the credential header to be sent on requests the operator never authorised.",
       "evidence": "return urllib.request.build_opener(_HTTPSHandler, _HTTPHandler)",
-      "recommendation": "Install a redirect handler that either refuses redirects (raise) or re-runs _ssrf.validate + allowed_hosts on each Location and strips the Authorization header on cross-host hops."
+      "recommendation": "Install a redirect handler that either refuses redirects (raise) or re-runs _ssrf.validate + allowed_hosts on each Location and strips the Authorization header on cross-host hops.",
+      "status": "fixed"
     },
     {
       "id": "connector-007",
@@ -99,7 +100,8 @@
       "line": 78,
       "scenario": "The response is read as `resp.read(MAX_BYTES)` — capped, not rejected. If a provider page exceeds MAX_RESPONSE_BYTES (1 MiB) the JSON is truncated mid-stream, `_parse` fails to json.loads it and returns `{}` (swallowing the error). fetch() then sees zero records and an empty next_cursor and reports a successful empty/terminal page, silently dropping every record in an oversized page and potentially advancing past them. There is no signal that truncation occurred.",
       "evidence": "with _pinned_opener(target).open(req, timeout=TIMEOUT) as resp:  # nosec B310 ...\n            return resp.status, _parse(resp.read(MAX_BYTES)), dict(resp.getheaders())",
-      "recommendation": "Read MAX_BYTES+1 and raise ProviderUnavailable('response too large') when the cap is exceeded instead of truncating, and distinguish a JSON parse failure from an empty body rather than both mapping to {}."
+      "recommendation": "Read MAX_BYTES+1 and raise ProviderUnavailable('response too large') when the cap is exceeded instead of truncating, and distinguish a JSON parse failure from an empty body rather than both mapping to {}.",
+      "status": "fixed"
     },
     {
       "id": "connector-008",
@@ -110,7 +112,8 @@
       "line": 61,
       "scenario": "disconnect() destroys the sealed credentials and calls build_tokens(request).bump(conn.tenant) to make cached tokens die immediately ('revocation is immediate'). bump() wraps the cache read+set in `try/except Exception: pass`. If the cache set fails (redis blip, auth error) the generation is NOT bumped and no error is raised or logged. The credentials() hot path serves the previously cached access token for up to CONNECTION_CACHE_TTL_SECONDS (60s) — and the cached path never re-checks connection status — so a just-disconnected/revoked connection keeps making authenticated provider calls with no signal.",
       "evidence": "async def bump(self, tenant: str) -> None:\n        ...\n        try:\n            g = await self._cache.get(f\"conngen:{tenant}\")\n            await self._cache.set(f\"conngen:{tenant}\", str(int(g or 0) + 1), None)\n        except Exception:\n            pass",
-      "recommendation": "Log/telemeter a failed bump and surface it to the disconnect caller (or fail the disconnect), since silent failure defeats the immediate-revocation guarantee the design promises."
+      "recommendation": "Log/telemeter a failed bump and surface it to the disconnect caller (or fail the disconnect), since silent failure defeats the immediate-revocation guarantee the design promises.",
+      "status": "fixed"
     },
     {
       "id": "connector-009",
@@ -144,7 +147,8 @@
       "line": 120,
       "scenario": "test_connect_rejects_another_tenants_spec claims to prove 'a connection may only use a spec in the caller's own tenant', but it never calls POST /connect. It saves a spec, fetches it back, and asserts `got.tenant == 'shop_a'` and `got.tenant != 'shop_b'` — i.e. it tests SpecStore.get and Python's `!=` operator. If the real guard in connect() (`spec_row.tenant != caller_tenant`) were deleted, this test still passes. A tests-that-stop-testing case: the security control has a green test but no real coverage.",
       "evidence": "# the check the connect route performs: fetch by id, compare tenant\n        got = await SpecStore(st).get(spec.id)\n        assert got is not None and got.tenant == \"shop_a\"\n        # a caller from shop_b would fail the `got.tenant != caller_tenant` guard\n        assert got.tenant != \"shop_b\"",
-      "recommendation": "Drive the actual endpoint with a shop_b principal and a shop_a spec_id and assert 404 SPEC_NOT_FOUND, so removing the guard turns the test red."
+      "recommendation": "Drive the actual endpoint with a shop_b principal and a shop_a spec_id and assert 404 SPEC_NOT_FOUND, so removing the guard turns the test red.",
+      "status": "fixed"
     },
     {
       "id": "connector-012",
@@ -155,7 +159,8 @@
       "line": 49,
       "scenario": "Slack answers 200 with {\"ok\": false, \"error\": ...} for many non-auth conditions (channel_not_found, not_in_channel, invalid_arguments, ratelimited). Both fetch() and push() raise CredentialInvalid on any ok=false. In SyncEngine.pull/push a CredentialInvalid on push marks the connection failed and, via TokenManager on the credentials path, can drive a connection to NEEDS_REAUTH. A transient/benign Slack error thus looks like a dead credential and needlessly forces re-authorisation, while a genuine 'ratelimited' error bypasses the Retry-After/RateLimited path entirely.",
       "evidence": "if not body.get(\"ok\", False):\n            raise CredentialInvalid(f\"slack error: {body.get('error', 'unknown')}\")",
-      "recommendation": "Map Slack error codes: invalid_auth/token_revoked/account_inactive -> CredentialInvalid, ratelimited -> RateLimited(retry_after), transient/5xx-ish -> ProviderUnavailable, and per-record errors -> a mapping failure that dead-letters that record."
+      "recommendation": "Map Slack error codes: invalid_auth/token_revoked/account_inactive -> CredentialInvalid, ratelimited -> RateLimited(retry_after), transient/5xx-ish -> ProviderUnavailable, and per-record errors -> a mapping failure that dead-letters that record.",
+      "status": "fixed"
     },
     {
       "id": "connector-013",
@@ -190,7 +195,8 @@
       "line": 242,
       "scenario": "operator.py mounts Depends(rate_limit) on every route, but connectors.py mounts none. POST /sync triggers unbounded outbound provider traffic (a whole batch pull/push per call) and POST /connect triggers an OAuth token exchange, both authenticated but unthrottled. A caller (or a compromised token) with connectors.manage can hammer /sync to drive the service to exhaust provider rate limits, spin the event loop on to_thread work, and generate cost, with no per-subject/tenant ceiling.",
       "evidence": "@router.post(\"/sync\")\nasync def sync(request: Request, body: SyncIn, principal: Principal = Depends(_ADMIN)) -> dict:",
-      "recommendation": "Add Depends(rate_limit) (with an appropriate route class/cost for the expensive sync path) to the connector v1 routes as done throughout the operator surface."
+      "recommendation": "Add Depends(rate_limit) (with an appropriate route class/cost for the expensive sync path) to the connector v1 routes as done throughout the operator surface.",
+      "status": "fixed"
     },
     {
       "id": "connector-016",

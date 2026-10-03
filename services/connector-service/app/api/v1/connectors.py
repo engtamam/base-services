@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.api.auth import Principal
 from app.api.authz import require_any_capability
+from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.core import seal as _seal
 from app.core import ssrf as _ssrf
@@ -42,7 +43,7 @@ def build_tokens(request: Request) -> TokenManager:
     return TokenManager(connections=ConnectionStore(c.datastore), provider=c.provider,
                         clock=c.clock, seal_key=s.seal_key, cache=c.cache,
                         cache_ttl=s.CONNECTION_CACHE_TTL_SECONDS,
-                        refresh_skew=s.TOKEN_REFRESH_SKEW_SECONDS)
+                        refresh_skew=s.TOKEN_REFRESH_SKEW_SECONDS, telemetry=c.telemetry)
 
 
 def build_sync(request: Request) -> SyncEngine:
@@ -112,7 +113,7 @@ class SyncIn(BaseModel):
 
 
 # ── provider specs (make a provider config, not code) ──────────────────────────
-@router.post("/specs", status_code=201)
+@router.post("/specs", status_code=201, dependencies=[Depends(rate_limit)])
 async def create_spec(request: Request, body: SpecIn, principal: Principal = Depends(_ADMIN)) -> dict:
     s = get_settings()
     try:
@@ -151,7 +152,7 @@ async def create_spec(request: Request, body: SpecIn, principal: Principal = Dep
     return saved
 
 
-@router.get("/specs", dependencies=[Depends(_READ)])
+@router.get("/specs", dependencies=[Depends(_READ), Depends(rate_limit)])
 async def list_specs(request: Request, principal: Principal = Depends(_READ)) -> dict:
     rows = await SpecStore(request.app.state.container.datastore).list(
         _tenant(principal), get_settings().CONNECTOR_LIST_LIMIT)
@@ -159,7 +160,7 @@ async def list_specs(request: Request, principal: Principal = Depends(_READ)) ->
 
 
 # ── connections ────────────────────────────────────────────────────────────────
-@router.post("/connect", status_code=201)
+@router.post("/connect", status_code=201, dependencies=[Depends(rate_limit)])
 async def connect(request: Request, body: ConnectIn, principal: Principal = Depends(_ADMIN)) -> dict:
     s = get_settings()
     c = request.app.state.container
@@ -205,20 +206,20 @@ async def connect(request: Request, body: ConnectIn, principal: Principal = Depe
     return conn.public()          # credentials are never returned
 
 
-@router.get("", dependencies=[Depends(_READ)])
+@router.get("", dependencies=[Depends(_READ), Depends(rate_limit)])
 async def list_connections(request: Request, principal: Principal = Depends(_READ)) -> dict:
     rows = await ConnectionStore(request.app.state.container.datastore).list(
         _tenant(principal), get_settings().CONNECTOR_LIST_LIMIT)
     return {"connections": [Connection.from_dict(r).public() for r in rows]}
 
 
-@router.get("/{connection_id}/health", dependencies=[Depends(_READ)])
+@router.get("/{connection_id}/health", dependencies=[Depends(_READ), Depends(rate_limit)])
 async def health(request: Request, connection_id: str, principal: Principal = Depends(_READ)) -> dict:
     await _owned(request, connection_id, principal)
     return await build_sync(request).health(connection_id)
 
 
-@router.post("/{connection_id}/disconnect")
+@router.post("/{connection_id}/disconnect", dependencies=[Depends(rate_limit)])
 async def disconnect(request: Request, connection_id: str, principal: Principal = Depends(_ADMIN)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
@@ -240,14 +241,22 @@ async def disconnect(request: Request, connection_id: str, principal: Principal 
     conn.status = REVOKED
     conn.access_sealed = conn.refresh_sealed = ""     # credentials destroyed at rest
     await ConnectionStore(c.datastore).save(conn)
-    await build_tokens(request).bump(conn.tenant)      # cached token dies immediately
-    from app.core.token_manager import evict_lock
+    from app.core.token_manager import BumpFailed, evict_lock
+    # connector-008: the cache bump is what makes revocation immediate. If it fails, the credentials are
+    # already destroyed at rest, but a cached token could still be served until the TTL expires — report
+    # it rather than claim a clean disconnect.
+    cache_bump_failed = False
+    try:
+        await build_tokens(request).bump(conn.tenant, strict=True)
+    except BumpFailed:
+        cache_bump_failed = True
     evict_lock(conn.id)                                 # release the per-connection refresh lock (r2-07)
-    return {"disconnected": True, "provider_revoked": revoked}
+    return {"disconnected": True, "provider_revoked": revoked,
+            "cache_bump_failed": cache_bump_failed}
 
 
 # ── sync ───────────────────────────────────────────────────────────────────────
-@router.post("/sync")
+@router.post("/sync", dependencies=[Depends(rate_limit)])
 async def sync(request: Request, body: SyncIn, principal: Principal = Depends(_ADMIN)) -> dict:
     conn = await _owned(request, body.connection_id, principal)
     spec = await _spec_for(request, conn)
@@ -265,13 +274,13 @@ async def sync(request: Request, body: SyncIn, principal: Principal = Depends(_A
                              records=body.records, spec=spec, field_map=field_map)
 
 
-@router.get("/runs", dependencies=[Depends(_READ)])
+@router.get("/runs", dependencies=[Depends(_READ), Depends(rate_limit)])
 async def list_runs(request: Request, principal: Principal = Depends(_READ)) -> dict:
     return {"runs": await RunStore(request.app.state.container.datastore).list(
         _tenant(principal), get_settings().CONNECTOR_LIST_LIMIT)}
 
 
-@router.get("/dead-letters", dependencies=[Depends(_READ)])
+@router.get("/dead-letters", dependencies=[Depends(_READ), Depends(rate_limit)])
 async def dead_letters(request: Request, principal: Principal = Depends(_READ)) -> dict:
     rows = await DlqStore(request.app.state.container.datastore).list(
         _tenant(principal), get_settings().CONNECTOR_LIST_LIMIT)
