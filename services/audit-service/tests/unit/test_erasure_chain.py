@@ -19,7 +19,7 @@ import asyncio
 import pytest
 
 from app.adapters.datastore.memory import MemoryDataStore
-from app.core.erasure import AuditErasure, assert_no_pii
+from app.core.erasure import AuditErasure
 from app.core.pii import subject_ref
 
 SALT = "product-pii-salt"
@@ -92,24 +92,3 @@ def test_retention_is_an_answer_with_a_reason_not_a_silence():
     assert retained["basis"] and retained["why"], "audit kept data without saying why"
 
 
-# ── the write-time enforcement that makes all of the above true ─────────────
-def test_a_raw_identity_is_refused_at_write_time():
-    """The only place to stop it. Once hashed into the chain it is permanent."""
-    with pytest.raises(ValueError, match="subject_ref"):
-        assert_no_pii({"actor": "alice@x.com"})
-
-
-def test_a_pseudonym_actor_is_accepted():
-    assert_no_pii({"actor": subject_ref(SALT, TENANT, SUBJECT)})     # does not raise
-
-
-@pytest.mark.parametrize("field", ["email", "phone", "name", "ip", "address"])
-def test_personal_fields_are_refused_in_metadata(field):
-    """metadata is free-form, which is exactly how PII sneaks into a permanent record."""
-    with pytest.raises(ValueError, match="personal fields"):
-        assert_no_pii({"actor": subject_ref(SALT, TENANT, SUBJECT), "metadata": {field: "x"}})
-
-
-def test_an_empty_actor_is_allowed():
-    """System events have no subject. They must not be forced to invent one."""
-    assert_no_pii({"actor": ""})

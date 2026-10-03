@@ -146,10 +146,7 @@ async def export(request: Request, principal: Principal = Depends(require_user),
 @router.post("/purge")
 async def purge(request: Request, body: PurgeIn,
                 principal: Principal = Depends(require_capability("platform.audit"))) -> dict:
-    # Write-ahead: a critical action the log cannot take must not happen at all, so this
-    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
-    # already succeeded, and leave it unrecorded.
-    await request.app.state.auditor.record(
-        "audit.purged", actor=principal.subject, tenant=principal.tenant, resource="audit_log",
-        ip=request.client.host if request.client else "")
-    return await build_audit(request).purge(body.before_ts, body.partition)
+    # The audit.purged record is emitted ONCE, inside purge() (audit-007), carrying both this actor and
+    # the outcome metadata in the acted partition's own chain — a single self-documenting record rather
+    # than one here plus one in core.
+    return await build_audit(request).purge(body.before_ts, body.partition, actor=principal.subject)

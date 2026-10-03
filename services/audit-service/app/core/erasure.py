@@ -19,16 +19,12 @@ and — the part that matters — the chain still verifies. "We kept it" is an a
 attached, never a silence.
 
 The one thing that would break this design is an event that smuggled real PII into `metadata`.
-`assert_no_pii` refuses that at WRITE time, because by the time it is in the chain it is permanent.
+PiiPolicy (app/core/pii_policy.py) refuses that at WRITE time, because by the time it is in the chain
+it is permanent.
 """
 from __future__ import annotations
 
 from typing import Any
-
-from app.core.pii import is_subject_ref
-
-# Field names that must never carry a raw identity into an immutable record.
-_PII_FIELDS = ("email", "phone", "name", "username", "address", "ip")
 
 RETENTION_BASIS = "security_audit"
 
@@ -72,23 +68,6 @@ class AuditErasure:
         }
 
 
-def assert_no_pii(event_fields: dict[str, Any]) -> None:
-    """Refuse to write a raw identity into the chain. Called at RECORD time, not at erasure.
-
-    Once a value is hashed into the chain it is permanent — there is no later fix. The only place
-    this can be enforced is before the write.
-    """
-    actor = event_fields.get("actor", "")
-    if actor and not is_subject_ref(actor):
-        raise ValueError(
-            f"audit actor must be a subject_ref pseudonym, got {actor!r}. Writing a real identity "
-            f"into a hash-chained record makes it permanent and unerasable — compute "
-            f"subject_ref(PII_SALT, tenant, subject) at the call site."
-        )
-    metadata = event_fields.get("metadata") or {}
-    leaked = [k for k in metadata if k.lower() in _PII_FIELDS]
-    if leaked:
-        raise ValueError(
-            f"audit metadata carries personal fields {leaked} — these would be permanent and "
-            f"unerasable in the chain. Store a subject_ref instead."
-        )
+# NOTE (audit-009): assert_no_pii() was removed — a dead, never-called enforcement path with a stale
+# hardcoded field list. PiiPolicy (app/core/pii_policy.py), applied at the record boundary and driven by
+# AUDIT_PII_FIELDS, is the single live enforcement of "no raw identity enters the chain".

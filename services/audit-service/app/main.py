@@ -91,10 +91,19 @@ def create_app() -> FastAPI:
             def _make_handler():
                 async def handler(event):
                     p = event.payload if isinstance(event.payload, dict) else {}
-                    await svc.record(service=p.get("service", event.type.split(".")[0]),
-                                     action=event.type, actor=p.get("actor", ""),
-                                     resource=p.get("resource", ""), tenant=p.get("tenant", ""),
-                                     metadata=p)
+                    # Idempotent ingest (audit-004): an at-least-once bus redelivers, and a bare record()
+                    # appended the same event to the chain twice. Dedup on a STABLE key from the message —
+                    # the source event's idempotency_key / id, or the bus envelope id — so a redelivery
+                    # returns the original receipt and appends nothing. No key => plain record (unchanged).
+                    key = str(p.get("idempotency_key") or p.get("id") or getattr(event, "id", "") or "")
+                    fields = dict(service=p.get("service", event.type.split(".")[0]),
+                                  action=event.type, actor=p.get("actor", ""),
+                                  resource=p.get("resource", ""), tenant=p.get("tenant", ""),
+                                  metadata=p)
+                    if key:
+                        await svc.record_idempotent(idempotency_key=f"bus::{key}", **fields)
+                    else:
+                        await svc.record(**fields)
                 return handler
 
             for topic in topics:

@@ -366,7 +366,7 @@ class AuditService:
 
     # ── retention purge (re-anchors the chain) ────────────────────────────────
     async def purge(self, before_ts: str, partition: str = "global",
-                    held_refs: frozenset[str] | None = None) -> dict:
+                    held_refs: frozenset[str] | None = None, actor: str = "") -> dict:
         """Delete events older than the cutoff — except any belonging to a HELD subject.
 
         `held_refs` carries subject_ref PSEUDONYMS, which is the only shape this service can use:
@@ -440,9 +440,14 @@ class AuditService:
         # The self-record belongs in the SAME partition the purge acted on (audit-006): in tenant mode
         # the partition IS the tenant, so tenant=partition routes it there instead of defaulting to
         # global and scattering a tenant's purge receipt into a chain it did not touch.
-        await self.record(service="audit-service", action="audit.purged", tenant=partition,
+        # The SINGLE audit.purged record (audit-007): carries both the human actor (passed from the
+        # route) and the outcome metadata, in the partition the purge acted on (audit-006). The route no
+        # longer emits a second one.
+        await self.record(service="audit-service", action="audit.purged", actor=actor, tenant=partition,
                           metadata={"before_ts": before_ts, "purged": len(purged),
                                     "held": len(held)})
+        # remaining = survivors still in the chain AFTER the self-record above appended (audit-008):
+        # kept events + the one audit.purged marker just written. Computed from real counts, not a bare +1.
         return {"purged": len(purged), "remaining": len(kept) + 1, "held": len(held)}
 
     def _journaling(self) -> bool:

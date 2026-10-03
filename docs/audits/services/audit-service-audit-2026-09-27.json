@@ -62,7 +62,8 @@
       "line": 86,
       "scenario": "The topic handler calls svc.record(...) directly (not record_idempotent) with no idempotency key. Redis/eventbus delivery is at-least-once; a redelivered message (consumer restart, ack lost) appends a SECOND event for the same action to the tamper-evident chain. There is no dedupe, so the chain accumulates duplicate audit records that an investigator cannot distinguish from two real actions.",
       "evidence": "await svc.record(service=p.get(\"service\", event.type.split(\".\")[0]),\n                 action=event.type, actor=p.get(\"actor\", \"\"),\n                 resource=p.get(\"resource\", \"\"), tenant=p.get(\"tenant\", \"\"),\n                 metadata=p)",
-      "recommendation": "Route bus ingest through record_idempotent() using a stable key from the message (bus message id / payload idempotency field)."
+      "recommendation": "Route bus ingest through record_idempotent() using a stable key from the message (bus message id / payload idempotency field).",
+      "status": "fixed"
     },
     {
       "id": "audit-005",
@@ -97,7 +98,8 @@
       "line": 152,
       "scenario": "POST /api/v1/audit/purge records 'audit.purged' write-ahead at the route (actor=principal), and build_audit().purge() ALSO calls self.record(action='audit.purged') at the end (actor=''/system). One user purge therefore appends two audit.purged records with different actors and metadata. Counting purges, or attributing who purged, double-counts and conflates the human actor with the internal system record.",
       "evidence": "await request.app.state.auditor.record(\n    \"audit.purged\", actor=principal.subject, tenant=principal.tenant, resource=\"audit_log\",\n    ip=request.client.host if request.client else \"\")",
-      "recommendation": "Emit the audit.purged record in exactly one place (either the route with the human actor, or the core with the outcome metadata), not both."
+      "recommendation": "Emit the audit.purged record in exactly one place (either the route with the human actor, or the core with the outcome metadata), not both.",
+      "status": "fixed"
     },
     {
       "id": "audit-008",
@@ -108,7 +110,8 @@
       "line": 435,
       "scenario": "purge() returns {'remaining': len(kept) + 1, ...}. The +1 presumes the subsequent self.record('audit.purged') append will succeed and be the one extra survivor. If that record() raises (append could-not-converge after 64 retries, or datastore error), the reported 'remaining' overcounts by one; and the number is fragile documentation of an implementation side effect rather than a real count of stored rows.",
       "evidence": "return {\"purged\": len(purged), \"remaining\": len(kept) + 1, \"held\": len(held)}",
-      "recommendation": "Compute 'remaining' from actual state after the append (or drop the +1 and report kept survivors only), and record the self-audit event before computing the return."
+      "recommendation": "Compute 'remaining' from actual state after the append (or drop the +1 and report kept survivors only), and record the self-audit event before computing the return.",
+      "status": "fixed"
     },
     {
       "id": "audit-009",
@@ -119,7 +122,8 @@
       "line": 75,
       "scenario": "assert_no_pii() is defined and covered by tests/unit/test_erasure_chain.py, but grep shows it is never called on the record/write path — the actual enforcement is PiiPolicy. Its field list _PII_FIELDS is hardcoded to ('email','phone','name','username','address','ip') and diverges from the configurable AUDIT_PII_FIELDS default (which also includes national_id, iqama, passport). The test gives false confidence that these fields are blocked at write time; they are only blocked by PiiPolicy, and only the config list — a reader trusting this function is misled.",
       "evidence": "_PII_FIELDS = (\"email\", \"phone\", \"name\", \"username\", \"address\", \"ip\")",
-      "recommendation": "Delete assert_no_pii() (and its test) as superseded by PiiPolicy, or wire it in and drive it from AUDIT_PII_FIELDS so the two enforcement points cannot diverge."
+      "recommendation": "Delete assert_no_pii() (and its test) as superseded by PiiPolicy, or wire it in and drive it from AUDIT_PII_FIELDS so the two enforcement points cannot diverge.",
+      "status": "fixed"
     },
     {
       "id": "audit-010",
@@ -153,7 +157,8 @@
       "line": 65,
       "scenario": "readyz reads getattr(get_settings(), 'READYZ_TIMEOUT_SECONDS', _DEFAULT_READYZ_TIMEOUT). Settings (config.py) declares no such field, so the getattr ALWAYS falls back to 5.0 and the environment variable is silently ignored. An operator who sets READYZ_TIMEOUT_SECONDS to fit a slow node sees no effect, and there is no boot error telling them the knob does not exist. Defensive getattr hides the missing declaration.",
       "evidence": "timeout = getattr(get_settings(), \"READYZ_TIMEOUT_SECONDS\", _DEFAULT_READYZ_TIMEOUT)",
-      "recommendation": "Declare READYZ_TIMEOUT_SECONDS on Settings and read settings.READYZ_TIMEOUT_SECONDS directly, or remove the phantom knob."
+      "recommendation": "Declare READYZ_TIMEOUT_SECONDS on Settings and read settings.READYZ_TIMEOUT_SECONDS directly, or remove the phantom knob.",
+      "status": "fixed"
     },
     {
       "id": "audit-013",
@@ -198,7 +203,8 @@
       "line": 59,
       "scenario": "is_subject_ref() checks only the 'sub_' prefix and total length 36; it does not verify the 32 chars are hex. A caller can send actor='sub_' + 32 arbitrary characters and PiiPolicy.apply() treats it as already-pseudonymized and passes it through unfolded (fold mode) — writing an attacker-chosen 'pseudonym' into the chain. It also lets junk that merely looks like a ref poison actor queries and evade the enforce-mode raw-identity check.",
       "evidence": "return isinstance(value, str) and value.startswith(_PREFIX) and len(value) == len(_PREFIX) + _LEN",
-      "recommendation": "Validate the suffix is 32 lowercase hex characters (e.g. a regex) before treating a value as an existing subject_ref."
+      "recommendation": "Validate the suffix is 32 lowercase hex characters (e.g. a regex) before treating a value as an existing subject_ref.",
+      "status": "fixed"
     },
     {
       "id": "audit-017",
@@ -209,7 +215,8 @@
       "line": 21,
       "scenario": "_json_any_map()/_json_str_map() catch ValueError/TypeError and return {} for malformed input. INTERNAL_ROUTE_POLICY_JSON is parsed this way: a typo in the per-route caller allow-list JSON silently yields {} (no policy), and per require_internal_token a route with no policy is default-open (admits any authenticated caller). A security control (the per-route allow-list) fails OPEN on a config typo with no error at boot.",
       "evidence": "try:\n    val = _json.loads(raw)\nexcept (ValueError, TypeError):\n    return {}",
-      "recommendation": "For security-relevant maps (route policy, caller keys), fail fast at boot on malformed JSON rather than returning an empty map that disables the control."
+      "recommendation": "For security-relevant maps (route policy, caller keys), fail fast at boot on malformed JSON rather than returning an empty map that disables the control.",
+      "status": "fixed"
     },
     {
       "id": "audit-018",

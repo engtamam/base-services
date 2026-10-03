@@ -57,5 +57,11 @@ def subject_ref(salt: str, tenant: str, subject: str) -> str:
 
 
 def is_subject_ref(value: str) -> bool:
-    """True if `value` already looks like a pseudonym (so we never double-wrap one)."""
-    return isinstance(value, str) and value.startswith(_PREFIX) and len(value) == len(_PREFIX) + _LEN
+    """True if `value` already looks like a pseudonym (so we never double-wrap one). The suffix must be
+    exactly `_LEN` LOWERCASE HEX characters (audit-016): a pseudonym is _PREFIX + a truncated sha256 hex
+    digest, so `sub_` + 32 arbitrary characters is NOT one — accepting any such string let a raw
+    identifier shaped like `sub_<anything>` pass as an already-pseudonymised value."""
+    if not isinstance(value, str) or not value.startswith(_PREFIX):
+        return False
+    suffix = value[len(_PREFIX):]
+    return len(suffix) == _LEN and all(c in "0123456789abcdef" for c in suffix)
