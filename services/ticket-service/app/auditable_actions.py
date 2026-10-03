@@ -213,6 +213,22 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "would keep a customer waiting, which is the opposite of what escalation is for",
     },
     {
+        "action": "ticket.tagged",
+        "source": "admin",
+        "critical": False,
+        "resource": "ticket",
+        "why": "ticket-005: tagging is an operator mutation that steers routing/reporting; recorded so it "
+               "is attributable like every other operator action here",
+    },
+    {
+        "action": "ticket.rated",
+        "source": "user",
+        "critical": False,
+        "resource": "ticket",
+        "why": "ticket-006: a CSAT rating feeds an SLA/stipend metric; recorded so the KPI signal is "
+               "attributable to the ticket it rates",
+    },
+    {
         "action": "ticket.share_granted",
         "source": "internal",
         "critical": True,

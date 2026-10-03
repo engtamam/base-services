@@ -212,6 +212,9 @@ class Settings(BaseSettings):
     NOTIFY_DRAIN_LIMIT: int = 100
     NOTIFY_RETRY_BASE_SECONDS: int = 30
     NOTIFY_RETRY_MAX_SECONDS: int = 3600
+    # ticket-008: dead-letter a notification after this many failed transport attempts (0 = unbounded,
+    # the old behaviour). A ceiling turns a permanently-broken downstream into an observable FAILED row.
+    NOTIFY_MAX_ATTEMPTS: int = 12
 
     # INBOUND bridge (channel message -> ticket). OFF by default: a platform opts in once it wants
     # customer WhatsApp messages to become tickets. `http` reads notification-service's durable inbound

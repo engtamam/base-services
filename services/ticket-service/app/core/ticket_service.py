@@ -44,6 +44,10 @@ class ReplyForbidden(TicketError):
     """The caller lacks the per-type reply capability this ticket type requires."""
 
 
+class AlreadyRated(TicketError):
+    """ticket-021: a ticket already carries a rating; re-rating is refused (first rating is the KPI)."""
+
+
 class TicketNotFound(TicketError):
     """No such ticket in this tenant (same answer as 'in another tenant' — never leak existence)."""
 
@@ -204,8 +208,18 @@ class TicketService:
                    comment: str = "") -> Ticket:
         score = max(1, min(5, int(score)))
         actor_ref = self.pseudonym(tenant, rater)
-        return await self._mutate(tenant, ticket_id, lambda t: {
-            "kind": "rated", "actor_ref": actor_ref, "body": comment, "data": {"score": score}})
+
+        def _apply(t: Ticket) -> dict:
+            # ticket-021: ONE rating per ticket. The CSAT a stipend keys on must be deterministic — the
+            # FIRST rating stands; a second submission is refused (AlreadyRated) rather than silently
+            # overwriting it. The rating is recorded on the ticket projection (meta.rating) so the guard
+            # is a cheap read and the KPI reads a single authoritative value.
+            if t.meta.get("rating") is not None:
+                raise AlreadyRated(f"{ticket_id}: already rated")
+            t.meta = {**t.meta, "rating": {"score": score, "by": actor_ref, "at": now()}}
+            return {"kind": "rated", "actor_ref": actor_ref, "body": comment, "data": {"score": score}}
+
+        return await self._mutate(tenant, ticket_id, _apply)
 
     # ── AI advisory (operator, on demand) ──────────────────────────────────────
     async def suggest_reply(self, tenant: str, ticket_id: str) -> dict[str, Any]:

@@ -530,7 +530,9 @@ async def ingest_inbound(request: Request, settings: Settings = Depends(get_sett
         notifier=TicketNotifier(NotifierOutbox(
             c.datastore, c.notification_sender,
             cfg={"retry_base_seconds": settings.NOTIFY_RETRY_BASE_SECONDS,
-                 "retry_max_seconds": settings.NOTIFY_RETRY_MAX_SECONDS})))
+                 "retry_max_seconds": settings.NOTIFY_RETRY_MAX_SECONDS,
+                 "notify_max_attempts": settings.NOTIFY_MAX_ATTEMPTS},
+            telemetry=getattr(c, "telemetry", None))))
     bridge = InboundBridge(service=svc, workflow=c.workflow, store=c.datastore,
                            ticket_type=settings.TICKET_INBOUND_TYPE,
                            subject_template=settings.TICKET_INBOUND_SUBJECT)
@@ -562,6 +564,7 @@ async def drain_notifications(request: Request,
     outbox = NotifierOutbox(
         c.datastore, c.notification_sender,
         cfg={"retry_base_seconds": settings.NOTIFY_RETRY_BASE_SECONDS,
-             "retry_max_seconds": settings.NOTIFY_RETRY_MAX_SECONDS},
+             "retry_max_seconds": settings.NOTIFY_RETRY_MAX_SECONDS,
+             "notify_max_attempts": settings.NOTIFY_MAX_ATTEMPTS},
         clock=time.monotonic)
     return await outbox.drain(limit=settings.NOTIFY_DRAIN_LIMIT)

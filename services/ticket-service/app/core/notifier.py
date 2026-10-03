@@ -35,11 +35,12 @@ def _audience(event: str, data: dict[str, Any]) -> str:
 
 
 class NotifierOutbox:
-    def __init__(self, store, sender, *, cfg: dict[str, Any], clock=None) -> None:
+    def __init__(self, store, sender, *, cfg: dict[str, Any], clock=None, telemetry=None) -> None:
         self._s = store
         self._sender = sender          # None ⇒ record only, deliver nothing (null driver)
         self._cfg = cfg
         self._clock = clock or (lambda: 0.0)
+        self._telemetry = telemetry
 
     async def record(self, *, tenant: str, ticket_id: str, template: str, event: str,
                      subject_ref: str, to: str, data: dict[str, Any]) -> dict:
@@ -68,13 +69,35 @@ class NotifierOutbox:
             await self._s.put(_COLL, row["id"], row)
             _log.error("notification_refused", extra={"notification": row["id"]})
             return False
-        except (NotificationUnavailable, Exception) as exc:  # noqa: BLE001 — any transport failure retries
+        except NotificationUnavailable as exc:
+            # A TRANSPORT failure — retry with backoff, but ticket-008: not FOREVER. Past NOTIFY_MAX_ATTEMPTS
+            # the row is dead-lettered (FAILED) with telemetry, so a permanently-broken downstream is an
+            # observable failure rather than an eternal retry loop.
             row["attempts"] = int(row.get("attempts", 0)) + 1
+            max_attempts = int(self._cfg.get("notify_max_attempts", 0) or 0)
+            if max_attempts and row["attempts"] >= max_attempts:
+                row["status"] = FAILED
+                row["last_error"] = f"max_attempts: {type(exc).__name__}"
+                await self._s.put(_COLL, row["id"], row)
+                _log.error("notification_dead_lettered",
+                           extra={"notification": row["id"], "attempts": row["attempts"]})
+                self._emit_gap("notify.dead_lettered", row)
+                return False
             base = self._cfg.get("retry_base_seconds", 30)
             cap = self._cfg.get("retry_max_seconds", 3600)
             row["next_attempt_at"] = self._clock() + min(base * (2 ** row["attempts"]), cap)
             row["last_error"] = type(exc).__name__
             await self._s.put(_COLL, row["id"], row)
+            return False
+        except Exception as exc:  # noqa: BLE001
+            # ticket-008: an UNEXPECTED exception is almost certainly a CODE BUG, not a transport blip.
+            # Do not silently retry it as a transport failure forever — dead-letter it and surface it at
+            # ERROR so it is noticed and fixed, while the drain pass continues with the next row.
+            row["status"] = FAILED
+            row["last_error"] = f"error: {type(exc).__name__}"
+            await self._s.put(_COLL, row["id"], row)
+            _log.error("notification_delivery_bug", extra={"notification": row["id"]}, exc_info=True)
+            self._emit_gap("notify.delivery_error", row)
             return False
         if not ok:
             # The null transport records but delivers nothing. Leave the row PENDING (and do NOT
@@ -85,6 +108,15 @@ class NotifierOutbox:
         row["last_error"] = ""
         await self._s.put(_COLL, row["id"], row)
         return True
+
+    def _emit_gap(self, name: str, row: dict) -> None:
+        if self._telemetry is None:
+            return
+        try:
+            self._telemetry.event(name, {"notification": row["id"], "tenant": row.get("tenant", ""),
+                                         "event": row.get("event", "")})
+        except Exception:   # noqa: BLE001
+            pass
 
     async def drain(self, *, limit: int = 100) -> dict[str, int]:
         now_t = self._clock()

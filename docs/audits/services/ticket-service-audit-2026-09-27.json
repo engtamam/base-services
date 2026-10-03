@@ -70,7 +70,8 @@
       "line": 395,
       "scenario": "tag_ticket() (operator-only) mutates ticket.tags but never calls auditor.record, and there is no ticket.tagged entry in auditable_actions.py. status/assign/escalate all audit; tagging does not. An operator (or a write-grant partner via escalate) can add/alter tags — which feed triage, routing and dashboards — with nothing on the record. This is exactly the audit-wiring gap MEMORY.md flags (many services declare/mutate actions no record() call wires).",
       "evidence": "@router.post(\"/tickets/{ticket_id}/tags\", dependencies=[Depends(rate_limit)])\nasync def tag_ticket(request: Request, ticket_id: str, body: TagIn,\n                     principal: Principal = Depends(_MANAGE)) -> dict:\n    tenant = _tenant(principal)\n    try:\n        t = await build_tickets(request).tag(...)",
-      "recommendation": "Declare ticket.tagged (source=admin, critical=False) and emit it in tag_ticket, matching the other operator mutations."
+      "recommendation": "Declare ticket.tagged (source=admin, critical=False) and emit it in tag_ticket, matching the other operator mutations.",
+      "status": "fixed"
     },
     {
       "id": "ticket-006",
@@ -81,7 +82,8 @@
       "line": 216,
       "scenario": "rate_ticket() appends a `rated` event and updates the ticket but never audits, and no ticket.rated action exists in auditable_actions.py. Ratings drive the CSAT/stipend KPI (kpis.ticket_kpis reads data.score); a mutation that influences a money decision (spec stipend) has no audit trail of who submitted it and when.",
       "evidence": "t = await svc.rate(tenant=tenant, ticket_id=ticket_id, rater=principal.subject,\n                       score=body.score, comment=body.comment)\n    return t.public()",
-      "recommendation": "Declare and emit ticket.rated (source=user), so a rating that feeds an SLA/stipend metric is attributable."
+      "recommendation": "Declare and emit ticket.rated (source=user), so a rating that feeds an SLA/stipend metric is attributable.",
+      "status": "fixed"
     },
     {
       "id": "ticket-007",
@@ -104,7 +106,8 @@
       "line": 71,
       "scenario": "deliver() catches `(NotificationUnavailable, Exception)` and, for anything that is not a NotificationRefused, increments attempts and reschedules with exponential backoff capped at retry_max_seconds — but there is no attempt ceiling that ever moves the row to FAILED. A permanent non-refused failure (e.g. a persistent 500, or a KeyError bug in the sender) is retried on every drain forever. The audit path deliberately has AUDIT_MAX_ATTEMPTS; the notify outbox has NOTIFY_RETRY_* but no max-attempts knob, so a poison row is drained indefinitely and masks a real defect (catching bare Exception hides programming bugs as 'transient').",
       "evidence": "except (NotificationUnavailable, Exception) as exc:  # noqa: BLE001 — any transport failure retries\n            row[\"attempts\"] = int(row.get(\"attempts\", 0)) + 1\n            ...\n            row[\"next_attempt_at\"] = self._clock() + min(base * (2 ** row[\"attempts\"]), cap)",
-      "recommendation": "Add a NOTIFY_MAX_ATTEMPTS ceiling that moves a row to FAILED (dead-letter) with telemetry, and stop catching bare Exception so a code bug surfaces instead of being retried as transport failure."
+      "recommendation": "Add a NOTIFY_MAX_ATTEMPTS ceiling that moves a row to FAILED (dead-letter) with telemetry, and stop catching bare Exception so a code bug surfaces instead of being retried as transport failure.",
+      "status": "fixed"
     },
     {
       "id": "ticket-009",
@@ -115,7 +118,8 @@
       "line": 124,
       "scenario": "The service records and acts on escalations as a first-class fact (escalate route, ticket.escalated audit, kpis escalated_at), and the eventbus audit sink can publish them, but the manifest declares emitted=[ticket.created, ticket.replied, ticket.status_changed, ticket.assigned]. A downstream service (per the manifest's own warning that an omitted event 'reads as this service publishes nothing') that builds subscriptions from the manifest will silently never react to escalations, tags or ratings.",
       "evidence": "\"events\": {\"emitted\": [\"ticket.created\", \"ticket.replied\", \"ticket.status_changed\",\n                               \"ticket.assigned\"], \"consumed\": []},",
-      "recommendation": "Reconcile emitted with the actual event/audit surface — add ticket.escalated (and tagged/rated if published) or document deliberately why they are not emitted."
+      "recommendation": "Reconcile emitted with the actual event/audit surface — add ticket.escalated (and tagged/rated if published) or document deliberately why they are not emitted.",
+      "status": "fixed"
     },
     {
       "id": "ticket-010",
@@ -126,7 +130,8 @@
       "line": 1,
       "scenario": "The only integration tests cover /healthz, /readyz, /metrics and the internal-token gate. There is no test that a customer cannot read/reply to another customer's ticket (the raiser_ref check at tickets.py:166/197/225), no test that a cross-tenant fetch 404s (_fetch at ticket_service.py:235), no test of an illegal transition being rejected, no test of the per-type reply capability (ReplyForbidden), no test of ShareGrant scope/expiry enforcement, and no test of the CAS transition race. The load-bearing security and state-machine logic ships with no executable proof, so a regression (e.g. dropping the raiser_ref check) would pass CI.",
       "evidence": "def test_internal_rejects_wrong_token(client):\n    r = client.get(\"/internal/health\", headers={\"X-Internal-Token\": \"wrong\"})\n    assert r.status_code == 401",
-      "recommendation": "Add integration tests asserting cross-tenant and cross-user 404, illegal-transition 409, reply-capability 403, share scope/expiry deny, and a concurrent-transition CAS test."
+      "recommendation": "Add integration tests asserting cross-tenant and cross-user 404, illegal-transition 409, reply-capability 403, share scope/expiry deny, and a concurrent-transition CAS test.",
+      "status": "fixed"
     },
     {
       "id": "ticket-011",
@@ -247,7 +252,8 @@
       "line": 201,
       "scenario": "rate_ticket lets the raiser POST /rate any number of times; each call appends a `rated` event, and kpis.ticket_kpis takes `rating = data.get('score', rating)` in seq order — i.e. LAST rating wins. A customer can rate 1, see the stipend/KPI implication, then re-POST a 5 and overwrite it; nothing records this as a revision or blocks it. For a rating that feeds a money/stipend decision (spec 8), an ungated, silently-overwritten score is a correctness and integrity problem.",
       "evidence": "async def rate(self, *, tenant: str, ticket_id: str, rater: str, score: int,\n                   comment: str = \"\") -> Ticket:\n        score = max(1, min(5, int(score)))\n        ...\n        return await self._mutate(tenant, ticket_id, lambda t: {\n            \"kind\": \"rated\", ...})",
-      "recommendation": "Enforce a single rating per ticket (reject or explicitly version subsequent ratings), and decide deterministically (first vs last) which the KPI uses, documented."
+      "recommendation": "Enforce a single rating per ticket (reject or explicitly version subsequent ratings), and decide deterministically (first vs last) which the KPI uses, documented.",
+      "status": "fixed"
     },
     {
       "id": "ticket-022",

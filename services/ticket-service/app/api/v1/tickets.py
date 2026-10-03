@@ -20,8 +20,9 @@ from app.api.authz import require_any_capability
 from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.core.stores import EventStore, TicketStore
-from app.core.ticket_service import (InvalidTransition, ReplyForbidden, RequiredFieldMissing,
-                                     TicketNotFound, TicketService, TransitionForbidden, UnknownType)
+from app.core.ticket_service import (AlreadyRated, InvalidTransition, ReplyForbidden,
+                                     RequiredFieldMissing, TicketNotFound, TicketService,
+                                     TransitionForbidden, UnknownType)
 
 from app.core.pii import subject_ref
 
@@ -53,7 +54,9 @@ def build_tickets(request: Request) -> TicketService:
     outbox = NotifierOutbox(
         c.datastore, c.notification_sender,
         cfg={"retry_base_seconds": s.NOTIFY_RETRY_BASE_SECONDS,
-             "retry_max_seconds": s.NOTIFY_RETRY_MAX_SECONDS})
+             "retry_max_seconds": s.NOTIFY_RETRY_MAX_SECONDS,
+             "notify_max_attempts": s.NOTIFY_MAX_ATTEMPTS},
+        telemetry=getattr(c, "telemetry", None))
     suggester = TicketSuggester(
         provider=c.suggestion_provider, events=events, tickets=tickets, workflow=c.workflow,
         autotag_min_confidence=s.SUGGEST_AUTOTAG_MIN_CONFIDENCE)
@@ -224,8 +227,16 @@ async def rate_ticket(request: Request, ticket_id: str, body: RateIn,
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
     if t.raiser_ref != svc.pseudonym(tenant, principal.subject):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")   # only the raiser rates
-    t = await svc.rate(tenant=tenant, ticket_id=ticket_id, rater=principal.subject,
-                       score=body.score, comment=body.comment)
+    try:
+        t = await svc.rate(tenant=tenant, ticket_id=ticket_id, rater=principal.subject,
+                           score=body.score, comment=body.comment)
+    except AlreadyRated:
+        raise HTTPException(status.HTTP_409_CONFLICT, "ALREADY_RATED")   # ticket-021
+    # ticket-006: a rating feeds an SLA/stipend metric — record it (source=user) so it is attributable.
+    await request.app.state.auditor.record(
+        "ticket.rated", actor=svc.pseudonym(tenant, principal.subject), tenant=tenant,
+        resource=f"ticket:{ticket_id}", ip=request.client.host if request.client else "",
+        metadata={"score": body.score})
     return t.public()
 
 
@@ -409,4 +420,10 @@ async def tag_ticket(request: Request, ticket_id: str, body: TagIn,
                                              tags=body.tags, actor=principal.subject)
     except TicketNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
+    # ticket-005: an operator mutation must be attributable. Recorded AFTER success (non-critical,
+    # reversible — a tag change does not destroy prior state), matching ticket-003's guidance.
+    await request.app.state.auditor.record(
+        "ticket.tagged", actor=_actor(principal, tenant), tenant=tenant,
+        resource=f"ticket:{ticket_id}", ip=request.client.host if request.client else "",
+        metadata={"tags": ",".join(body.tags)})
     return t.public()

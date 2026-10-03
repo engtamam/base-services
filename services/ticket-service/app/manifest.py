@@ -122,7 +122,8 @@ def build_manifest(
         # `emitted` reads as "this service publishes nothing", so a consumer wiring against it
         # subscribes to nothing and fails silently rather than at boot.
         "events": {"emitted": ["ticket.created", "ticket.replied", "ticket.status_changed",
-                               "ticket.assigned"], "consumed": []},
+                               "ticket.assigned", "ticket.escalated", "ticket.tagged",
+                               "ticket.rated"], "consumed": []},
         "admin_actions": _admin_actions(),
         "backup": _backup(),
         "user_actions": _user_actions(),
