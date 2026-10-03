@@ -102,18 +102,19 @@ class DispatchIn(BaseModel):
 # ── endpoints ─────────────────────────────────────────────────────────────────
 @router.post("/endpoints", status_code=201)
 async def register(request: Request, body: EndpointIn, principal: Principal = Depends(_ADMIN)) -> dict:
-    # Write-ahead: a critical action the log cannot take must not happen at all, so this
-    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
-    # already succeeded, and leave it unrecorded.
-    await request.app.state.auditor.record(
-        "webhook.endpoint_created", actor=principal.subject, tenant=principal.tenant, resource="endpoint",
-        ip=request.client.host if request.client else "")
+    # Record AFTER a successful create (webhook-005): register() SSRF-validates the URL and raises on a
+    # bad one, so a write-ahead audit here filed a phantom webhook.endpoint_created for an endpoint that
+    # was never created. A URL-validating route records once the endpoint id exists — same ordering as
+    # update_endpoint; the write-ahead convention applies to the non-validating routes (rotate/delete).
     try:
         ep = await build_webhooks(request).register(
             tenant=_tenant(principal, body.tenant), url=body.url,
             event_types=body.event_types, secret=body.secret, description=body.description)
     except SsrfBlocked as e:
         raise HTTPException(400, f"URL_REJECTED: {e}")
+    await request.app.state.auditor.record(
+        "webhook.endpoint_created", actor=principal.subject, tenant=principal.tenant,
+        resource=f"endpoint:{ep.id}", ip=request.client.host if request.client else "")
     out = ep.public()
     out["secret"] = ep.secrets[0]        # shown ONCE, at creation
     return out
@@ -135,6 +136,9 @@ async def update_endpoint(request: Request, endpoint_id: str, body: EndpointPatc
         ep = await svc.update(endpoint_id, **body.model_dump())
     except SsrfBlocked as e:
         raise HTTPException(400, f"URL_REJECTED: {e}")
+    # Recorded AFTER a successful update, consistent with register (webhook-005/006): update() SSRF-
+    # validates the new URL and raises on a bad one, so a pre-mutation audit would file a phantom
+    # endpoint_updated for a change that was rejected. Ownership is already authorized above.
     await request.app.state.auditor.record(
         "webhook.endpoint_updated", actor=principal.subject, tenant=principal.tenant,
         resource=f"endpoint:{endpoint_id}", ip=request.client.host if request.client else "")

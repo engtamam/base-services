@@ -74,7 +74,8 @@
       "line": 108,
       "scenario": "The write-ahead audit fires before register() validates the URL. When the URL is an SSRF target, register() raises SsrfBlocked, the endpoint is never created, and a 400 is returned — but the audit chain now holds a 'webhook.endpoint_created' row for an endpoint that does not exist. An investigator counting created endpoints, or diffing audit against reality, sees a creation that never happened.",
       "evidence": "await request.app.state.auditor.record(\n        \"webhook.endpoint_created\", actor=principal.subject, tenant=principal.tenant, resource=\"endpoint\",\n        ip=request.client.host if request.client else \"\")\n    try:\n        ep = await build_webhooks(request).register(",
-      "recommendation": "Validate the URL (cheap, pre-mutation) before recording the write-ahead audit, or record the audit only once the endpoint id exists and include it in resource=. Write-ahead should precede the mutation, not the validation."
+      "recommendation": "Validate the URL (cheap, pre-mutation) before recording the write-ahead audit, or record the audit only once the endpoint id exists and include it in resource=. Write-ahead should precede the mutation, not the validation.",
+      "status": "fixed"
     },
     {
       "id": "webhook-006",
@@ -85,7 +86,8 @@
       "line": 138,
       "scenario": "register, rotate, delete and erase all record their audit BEFORE the mutation (documented as critical write-ahead). update_endpoint records AFTER svc.update() persists the change. If webhook.endpoint_updated is treated as fail-closed, an update that already persisted a new (possibly attacker-chosen) URL then fails to audit returns 503 to the caller while the change is live and unrecorded — precisely the 'unprovable change already applied' outcome the write-ahead pattern exists to prevent.",
       "evidence": "ep = await svc.update(endpoint_id, **body.model_dump())\n    except SsrfBlocked as e:\n        raise HTTPException(400, f\"URL_REJECTED: {e}\")\n    await request.app.state.auditor.record(\n        \"webhook.endpoint_updated\", actor=principal.subject, tenant=principal.tenant,",
-      "recommendation": "Move the update audit ahead of svc.update() for consistency with the other mutating routes, so an endpoint URL change is never applied without a recorded intent."
+      "recommendation": "Move the update audit ahead of svc.update() for consistency with the other mutating routes, so an endpoint URL change is never applied without a recorded intent.",
+      "status": "fixed"
     },
     {
       "id": "webhook-007",
@@ -130,7 +132,8 @@
       "line": 14,
       "scenario": "Every SSRF test uses a literal private/metadata IP as the URL host. There is no test where a HOSTNAME resolves (via getaddrinfo) to a private or mixed public+private address — i.e. the ssrf.py:90-93 'ANY non-public resolved address disqualifies the host' branch, which is the actual DNS-rebinding defense, is never exercised. There is also no test asserting the transport connects to Target.ip rather than re-resolving the hostname. The service's headline guarantee (rebinding closed) rests on comments.",
       "evidence": "ATTACKS = [\n    (\"http://169.254.169.254/latest/meta-data/iam/\", \"aws metadata\"),\n    ... all literal IPs ...\n]",
-      "recommendation": "Add a test that monkeypatches socket.getaddrinfo to return a private (and a mixed public+private) result for a public-looking hostname and asserts SsrfBlocked; and a transport test asserting the socket connects to pinned_ip while Host/SNI stay the hostname."
+      "recommendation": "Add a test that monkeypatches socket.getaddrinfo to return a private (and a mixed public+private) result for a public-looking hostname and asserts SsrfBlocked; and a transport test asserting the socket connects to pinned_ip while Host/SNI stay the hostname.",
+      "status": "fixed"
     },
     {
       "id": "webhook-011",
