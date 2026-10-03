@@ -87,10 +87,21 @@ class MerchantGateways:
     async def _config(self, tenant: str) -> GatewayConfig:
         async def g(name: str) -> str:
             return await self._secrets.get(tenant=tenant, name=name, fallback="")
+        base = await g(API_BASE)
+        # payments-012: re-validate the gateway base ON READ, not only at write. The write-time guard is
+        # bypassable by a backup import / direct store write, so a non-https or private/internal base
+        # could reach the fetch path (SSRF / money-redirection). A stored base that fails validation is
+        # dropped here — gateway_for then falls back to the driver's own default base rather than calling
+        # an attacker-chosen host.
+        if base:
+            from app.adapters.payment_http import validate_gateway_base
+            ok, _reason = validate_gateway_base(base)
+            if not ok:
+                base = ""
         return GatewayConfig(
             driver=await self.driver_for(tenant),
             api_key=await g(API_KEY), extra_secret=await g(EXTRA_SECRET),
-            base=await g(API_BASE), webhook_secret=await g(WEBHOOK_SECRET))
+            base=base, webhook_secret=await g(WEBHOOK_SECRET))
 
     async def gateway_for(self, tenant: str) -> PaymentGateway:
         """Build the tenant's gateway from its sealed creds. Unknown/unset driver → null (fail-closed).

@@ -104,12 +104,15 @@ def test_verify_webhook_missing_tx_id_is_unverified_and_never_calls_the_gateway(
     assert out.verified is False and called["n"] == 0
 
 
-def test_verify_webhook_gateway_unavailable_never_fabricates_paid(monkeypatch):
+def test_verify_webhook_gateway_unavailable_propagates_for_retry(monkeypatch):
+    # payments-007: an UNREACHABLE verify-by-fetch must PROPAGATE (so the webhook route 503s and the
+    # gateway retries), not be swallowed into a verified=False 'pending' that looks like "nothing to do"
+    # and makes the gateway stop retrying. It still never fabricates a paid outcome.
     def boom(*a, **k):
         raise GatewayUnavailable("down")
     monkeypatch.setattr(tp, "get_json", boom)
-    out = _gw().verify_webhook(headers={}, body=_wh())
-    assert out.verified is False and out.status == "pending" and out.provider_ref == "abc123"
+    with pytest.raises(GatewayUnavailable):
+        _gw().verify_webhook(headers={}, body=_wh())
 
 
 def test_verify_webhook_malformed_body_is_unverified(monkeypatch):

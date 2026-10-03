@@ -87,7 +87,8 @@
       "line": 124,
       "scenario": "active_by_reference reads only the newest 10 rows for (tenant, reference) and scans them for a COMPLETED or live PENDING. If a shop reuses one order reference many times (retries, edits, failed attempts), and 10 newer rows are all failed/expired/cancelled, a still-live PENDING or the COMPLETED row that is older than the 10th newest is invisible. create_link then treats the order as new, wins a fresh claim, and mints a SECOND gateway bill/link for an order that may already be paid — a double-charge risk the claim guard is meant to prevent.",
       "evidence": "rows, _ = await self._s.find(_COLL, {\"tenant\": tenant, \"reference\": reference}, limit=10, sort=(\"created_at\", \"desc\")) ... for r in rows: if r.get('status') == COMPLETED: return r; if r.get('status') == PENDING and float(r.get('expires_at',0)) > now: return r",
-      "recommendation": "Do not bound the idempotency lookup by an arbitrary 10: query specifically for status in (completed, pending) with a filter, or key an index so the completed/live row is always found regardless of how many terminal rows precede it."
+      "recommendation": "Do not bound the idempotency lookup by an arbitrary 10: query specifically for status in (completed, pending) with a filter, or key an index so the completed/live row is always found regardless of how many terminal rows precede it.",
+      "status": "fixed"
     },
     {
       "id": "payments-007",
@@ -98,7 +99,8 @@
       "line": 60,
       "scenario": "If the gateway is transiently unreachable during verify, TuwaiqPayGateway.verify_webhook catches GatewayUnavailable and returns verified=False (tuwaiqpay.py:184-186); apply_outcome then returns None and the route replies {ok:true, applied:false} with HTTP 200. The gateway, having received a 200, will NOT re-deliver the webhook. Recovery now depends entirely on the reconcile sweep, which is OFF by default (PAYMENTS_RECONCILE_SWEEP_ENABLED=false). Result: a settlement whose single webhook arrived during a brief gateway blip is silently never applied — order stuck pending forever.",
       "evidence": "except GatewayUnavailable: return PaymentOutcome(status=PENDING, provider=self.driver, provider_ref=tx_id, verified=False)  # -> apply_outcome returns None -> route returns 200 applied:false",
-      "recommendation": "Distinguish 'verified not-applicable' from 'could not verify (gateway unreachable)'. On an unreachable-gateway verify, return a 5xx so the gateway retries, or enable/require the reconcile sweep as the documented safety net rather than defaulting it off."
+      "recommendation": "Distinguish 'verified not-applicable' from 'could not verify (gateway unreachable)'. On an unreachable-gateway verify, return a 5xx so the gateway retries, or enable/require the reconcile sweep as the documented safety net rather than defaulting it off.",
+      "status": "fixed"
     },
     {
       "id": "payments-008",
@@ -121,7 +123,8 @@
       "line": 168,
       "scenario": "fetch_status builds amount_minor = to_minor(bill.get('amount', 0) or 0, cur). If the TuwaiqPay status response nests the amount somewhere other than data.bill.amount (the code notes the shapes are UNCONFIRMED against live UAT, tuwaiqpay.py:56-61), bill.get('amount') is 0 -> amount_minor=0. apply_outcome computes amount_ok = bool(outcome.amount_minor) and ... -> 0 is falsy -> mismatch=True -> a verified SUCCEEDED is marked FAILED (payments.py:253-266). A schema mismatch in the unconfirmed status shape thus converts real settlements into 'failed', not a retryable error.",
       "evidence": "amount_minor=to_minor(bill.get(\"amount\", 0) or 0, cur)  # bill shape is 'UNCONFIRMED against live UAT (2026-09-19)' per _iso_currency docstring",
-      "recommendation": "Capture a real UAT status fixture and lock the amount/currency path down; until confirmed, treat an unparseable amount from a verified success as GatewayUnavailable (retry) rather than as a confirmed 0 that fails the request."
+      "recommendation": "Capture a real UAT status fixture and lock the amount/currency path down; until confirmed, treat an unparseable amount from a verified success as GatewayUnavailable (retry) rather than as a confirmed 0 that fails the request.",
+      "status": "fixed"
     },
     {
       "id": "payments-010",
@@ -132,7 +135,8 @@
       "line": 8,
       "scenario": "The FIN-012 fix that closes the resolve->connect rebind window lives in _send / _PinnedHTTPSConnection (payment_http.py:74-132): validate all resolved IPs, then CONNECT to the pinned IP. The test suite only calls guard_fetch_url() (a thin wrapper over _resolve_pinned that returns the reason string) and validate_gateway_base. Nothing asserts that _send actually connects to the pinned IP rather than re-resolving, so a regression that reintroduces re-resolution at connect (the exact rebind bug) would pass every test. guard_fetch_url is also otherwise unused in production code — the tested surface is not the enforced one.",
       "evidence": "from app.adapters.payment_http import guard_fetch_url, validate_gateway_base  # tests call only these; _PinnedHTTPSConnection.connect() (the actual pin) is never exercised",
-      "recommendation": "Add a test that drives _send against a resolver returning a public IP first and a private IP second and asserts the socket connects to the pinned public IP (and that TLS SNI/Host use the original hostname)."
+      "recommendation": "Add a test that drives _send against a resolver returning a public IP first and a private IP second and asserts the socket connects to the pinned public IP (and that TLS SNI/Host use the original hostname).",
+      "status": "fixed"
     },
     {
       "id": "payments-011",
@@ -154,7 +158,8 @@
       "line": 63,
       "scenario": "set_credential validates MERCHANT_API_BASE with validate_gateway_base (https + non-private) before sealing (internal_payments.py:63-66). But backup_import (internal.py:173) writes sealed rows straight into the datastore via _backup.import_archive without re-running that validation, and the fetch-time _ALLOWED_SCHEMES permits http as well as https (payment_http.py:31). A crafted or tampered archive (restored with the internal token + BACKUP_KEK) could install a MERCHANT_API_BASE of http://... or a hostname that resolves public-at-write but is attacker-controlled. The runtime _resolve_pinned still blocks private IPs, so this is not a full SSRF, but the write-time https guarantee is not actually an invariant on the stored value.",
       "evidence": "if body.name == API_BASE: ok, reason = validate_gateway_base(body.value)  # only on the set route; backup_import.import_archive writes rows with no such check; _ALLOWED_SCHEMES = ('https','http')",
-      "recommendation": "Re-validate MERCHANT_API_BASE on read in MerchantGateways._config (or reject non-https at fetch for the merchant path), so the guarantee holds regardless of how the row got into the store."
+      "recommendation": "Re-validate MERCHANT_API_BASE on read in MerchantGateways._config (or reject non-https at fetch for the merchant path), so the guarantee holds regardless of how the row got into the store.",
+      "status": "fixed"
     },
     {
       "id": "payments-013",
@@ -165,7 +170,8 @@
       "line": 116,
       "scenario": "create_request mints a hosted pay-link for an amount, and reconcile_request forces a gateway re-query that can move a request to COMPLETED. Both are privileged internal actions with money consequences, and both rely solely on the event bus for downstream fulfilment; neither writes an audit row naming the caller. There is no witnessed trail of 'who asked the conduit to bill tenant X SAR Y for reference R' or 'who triggered a reconcile that completed request Z'. When a disputed charge or a suspicious reconcile is investigated, the internal caller is unattributable.",
       "evidence": "async def create_request(...): ... link = await svc.create_link(...)  # no auditor.record; async def reconcile_request(...): row = await svc.reconcile(...)  # no auditor.record",
-      "recommendation": "Emit a non-critical audit event for create-request and reconcile (source=internal) with the caller identity, tenant, reference and amount, so money actions are attributable even though fulfilment goes over the bus."
+      "recommendation": "Emit a non-critical audit event for create-request and reconcile (source=internal) with the caller identity, tenant, reference and amount, so money actions are attributable even though fulfilment goes over the bus.",
+      "status": "fixed"
     },
     {
       "id": "payments-014",
@@ -231,7 +237,8 @@
       "line": 78,
       "scenario": "run_sweep_once iterates each PENDING row and awaits service.reconcile(tenant, request_id) inline. reconcile ultimately performs the synchronous blocking gateway fetch (payments-001). With page_size default 200, one pass can serialize up to 200 blocking HTTPS round trips, each up to 30s, all on the event loop — the sweep can freeze the whole process for minutes. Even ignoring the blocking-on-loop issue, the strictly sequential design means a single slow tenant delays reconciliation for every later tenant in the page.",
       "evidence": "elif (now() - float(row.get(\"created_at\", 0))) >= int(min_age_seconds): await service.reconcile(tenant=tenant, request_id=request_id)  # blocking http.client under the hood, one at a time",
-      "recommendation": "Run gateway calls off-loop (asyncio.to_thread) and consider bounded concurrency (gather with a semaphore) so one slow gateway does not stall the pass."
+      "recommendation": "Run gateway calls off-loop (asyncio.to_thread) and consider bounded concurrency (gather with a semaphore) so one slow gateway does not stall the pass.",
+      "status": "fixed"
     },
     {
       "id": "payments-020",

@@ -18,6 +18,7 @@ from app.api.payments_deps import build_payment_service
 from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.core.payments import PaymentsDisabled
+from app.ports.payment_gateway import GatewayUnavailable
 
 router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
 
@@ -58,6 +59,15 @@ async def gateway_webhook(request: Request, tenant: str):
     svc = build_payment_service(request)
     try:
         row = await svc.handle_webhook(tenant=tenant, headers=headers, body=body)
+    except GatewayUnavailable:
+        # payments-007: we could NOT verify because the gateway (that we re-query to confirm the webhook)
+        # was unreachable — this is "verification pending", not "nothing to do". Returning 200 would tell
+        # the gateway to stop retrying and we would silently drop the payment. Return 503 so it retries;
+        # the reconcile sweep is the backstop if it does not.
+        logging.getLogger("app.payments").warning(
+            "gateway webhook verify-by-fetch unreachable for tenant %s — asking for retry", tenant)
+        return JSONResponse({"ok": False, "reason": "verification temporarily unavailable"},
+                            status_code=503)
     except Exception:   # noqa: BLE001 — a malformed webhook must not 500 the gateway into retries
         # Log before swallowing (M8): keep the anti-retry-storm 200, but never hide a real bug.
         logging.getLogger("app.payments").exception(

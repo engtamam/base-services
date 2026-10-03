@@ -170,4 +170,21 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "why": "clearing a merchant credential disables or reroutes a shop's payments; like setting one "
                "it is a money-path change that must be attributable and cannot proceed unrecorded",
     },
+    {
+        "action": "payments.request_created",
+        "source": "internal",
+        "critical": False,
+        "resource": "payment_request",
+        "why": "minting a hosted pay-link is a money action a human/service triggered; recording the "
+               "caller, tenant, reference and amount keeps it attributable even though fulfilment goes "
+               "over the bus (payments-013). Non-critical: a down log must not block taking a payment",
+    },
+    {
+        "action": "payments.reconciled",
+        "source": "internal",
+        "critical": False,
+        "resource": "payment_request",
+        "why": "reconcile pulls the gateway's status and can move a request to paid; it is a money "
+               "action and must be attributable to whoever triggered it (payments-013)",
+    },
 ]

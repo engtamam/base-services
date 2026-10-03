@@ -45,6 +45,7 @@ async def run_sweep_once(
     service: PaymentService,
     min_age_seconds: int,
     page_size: int,
+    concurrency: int = 8,
     now=time.time,
     logger=None,
 ) -> SweepStats:
@@ -56,18 +57,16 @@ async def run_sweep_once(
     """
     stats = SweepStats()
     after: str | None = None
-    # `where={"status": PENDING}` is a scoped filter (find refuses an empty where), and we page with a
-    # keyset cursor on created_at — bounded reads, not a scan. A row that leaves the pending set
-    # between pages (completed/expired) simply stops matching; created_at is stable so the cursor never
-    # skips or repeats a live row.
-    while True:
-        rows, after = await datastore.find(
-            _COLL, {"status": PENDING}, limit=max(1, int(page_size)),
-            after=after, sort=("created_at", "asc"))
-        for row in rows:
-            stats.scanned += 1
-            tenant = row.get("tenant", "")
-            request_id = row.get("id", "")
+    # payments-019: process a page's rows with BOUNDED CONCURRENCY. reconcile already offloads its
+    # blocking gateway fetch off the loop, but awaiting one row at a time made the pass latency the SUM of
+    # every row's gateway round-trip — one slow tenant stalled the whole page. A semaphore caps in-flight
+    # reconciles so a slow gateway cannot block the rest while keeping the gateway fan-out bounded.
+    sem = asyncio.Semaphore(max(1, int(concurrency)))
+
+    async def _process(row: dict) -> None:
+        tenant = row.get("tenant", "")
+        request_id = row.get("id", "")
+        async with sem:
             try:
                 if requests.is_expired(row):
                     await requests.mark_expired(row)
@@ -86,6 +85,17 @@ async def run_sweep_once(
                         "reconcile_sweep_row_failed",
                         extra={"tenant": tenant, "request_id": request_id},
                         exc_info=True)
+
+    # `where={"status": PENDING}` is a scoped filter (find refuses an empty where), and we page with a
+    # keyset cursor on created_at — bounded reads, not a scan. A row that leaves the pending set
+    # between pages (completed/expired) simply stops matching; created_at is stable so the cursor never
+    # skips or repeats a live row.
+    while True:
+        rows, after = await datastore.find(
+            _COLL, {"status": PENDING}, limit=max(1, int(page_size)),
+            after=after, sort=("created_at", "asc"))
+        stats.scanned += len(rows)
+        await asyncio.gather(*(_process(row) for row in rows))
         if after is None:
             break
     return stats
@@ -103,6 +113,7 @@ class ReconcileSweep:
         interval_seconds: int,
         min_age_seconds: int,
         page_size: int = 200,
+        concurrency: int = 8,
         now=time.time,
         logger=None,
     ) -> None:
@@ -112,6 +123,7 @@ class ReconcileSweep:
         self._interval = max(1, int(interval_seconds))
         self._min_age = int(min_age_seconds)
         self._page_size = int(page_size)
+        self._concurrency = max(1, int(concurrency))
         self._now = now
         self._logger = logger
         self._task: asyncio.Task | None = None
@@ -119,8 +131,8 @@ class ReconcileSweep:
     async def run_once(self) -> SweepStats:
         return await run_sweep_once(
             datastore=self._datastore, requests=self._requests, service=self._service,
-            min_age_seconds=self._min_age, page_size=self._page_size, now=self._now,
-            logger=self._logger)
+            min_age_seconds=self._min_age, page_size=self._page_size,
+            concurrency=self._concurrency, now=self._now, logger=self._logger)
 
     async def _loop(self) -> None:
         while True:
@@ -171,4 +183,5 @@ def build_sweep(app, settings, logger=None) -> ReconcileSweep:
         interval_seconds=settings.PAYMENTS_RECONCILE_INTERVAL_SECONDS,
         min_age_seconds=settings.PAYMENTS_RECONCILE_MIN_AGE_SECONDS,
         page_size=settings.PAYMENTS_RECONCILE_PAGE_SIZE,
+        concurrency=getattr(settings, "PAYMENTS_RECONCILE_CONCURRENCY", 8),
         logger=logger)

@@ -151,6 +151,14 @@ async def create_request(request: Request, body: _CreateIn) -> dict:
     except GatewayUnavailable as exc:
         return JSONResponse({"ok": False, "reason": str(exc), "code": "GATEWAY_UNAVAILABLE"},
                             status_code=502)
+    # payments-013: a money action (minting a pay-link) must be attributable. Recorded AFTER success
+    # (non-critical: a down log must not block taking a payment), carrying caller/tenant/reference/amount.
+    await request.app.state.auditor.record(
+        "payments.request_created", actor=getattr(body, "actor_ref", "") or "service:internal",
+        tenant=body.tenant, resource=f"payment_request:{link.request_id}",
+        ip=request.client.host if request.client else "",
+        metadata={"reference": body.reference, "amount_minor": body.amount_minor,
+                  "currency": body.currency.upper(), "provider": link.provider})
     return {"ok": True, "request_id": link.request_id, "pay_url": link.pay_url,
             "redirect_url": link.redirect_url, "expires_at": link.expires_at,
             "provider": link.provider, "provider_ref": link.provider_ref}
@@ -186,4 +194,11 @@ async def reconcile_request(request: Request, request_id: str, tenant: str) -> d
                             status_code=502)
     if row is None:
         return JSONResponse({"ok": False, "reason": "not found"}, status_code=404)
+    # payments-013: reconcile can move a request to paid — a money action, recorded with the result.
+    await request.app.state.auditor.record(
+        "payments.reconciled", actor="service:internal", tenant=tenant,
+        resource=f"payment_request:{request_id}",
+        ip=request.client.host if request.client else "",
+        metadata={"status": row.get("status"), "amount_minor": row.get("amount_minor"),
+                  "currency": row.get("currency")})
     return {"ok": True, **_public_view(row)}

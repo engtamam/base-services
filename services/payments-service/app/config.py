@@ -178,6 +178,9 @@ class Settings(BaseSettings):
     # How many rows the sweep reads per page. The sweep pages the datastore (never an unbounded scan),
     # so this bounds the working set per read regardless of how many pendings accrue.
     PAYMENTS_RECONCILE_PAGE_SIZE: int = 200
+    # payments-019: max concurrent per-row gateway reconciles in a sweep page, so one slow gateway does
+    # not serialise the whole pass.
+    PAYMENTS_RECONCILE_CONCURRENCY: int = 8
 
     # ── Internal service-to-service auth (REQUIRED) ─────────────────────────
     # Shared token for /internal/* endpoints. Must be strong (>= 32 chars).

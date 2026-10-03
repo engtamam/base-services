@@ -121,8 +121,14 @@ class PaymentRequestStore:
         key that stops a second create from minting a second link (and a possible double charge)."""
         if not reference:
             return None
+        # payments-006: filter to the LIVE states (completed/pending) in the query itself, so a reference
+        # reused many times (its terminal failed/cancelled/expired rows piling up) can never push the one
+        # live row past an arbitrary limit and cause a duplicate link (a possible double charge). Only
+        # completed (one, terminal-success) and pending rows match; an expired pending is still excluded
+        # below by its expiry.
         rows, _ = await self._s.find(
-            _COLL, {"tenant": tenant, "reference": reference}, limit=10, sort=("created_at", "desc"))
+            _COLL, {"tenant": tenant, "reference": reference, "status": [COMPLETED, PENDING]},
+            limit=50, sort=("created_at", "desc"))
         now = self._now()
         for r in rows:
             if r.get("status") == COMPLETED:

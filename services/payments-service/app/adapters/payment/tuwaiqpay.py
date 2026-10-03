@@ -162,10 +162,17 @@ class TuwaiqPayGateway:
         status = _norm(str(data.get("transactionStatus", "")))
         bill = data.get("bill") or {}
         cur = _iso_currency(bill.get("currency"), currency)
+        amount_minor = to_minor(bill.get("amount", 0) or 0, cur)
+        # payments-009: a SUCCEEDED status whose amount we could not parse (missing/zero in the response
+        # shape) must NOT be returned as a confirmed 0 — apply_outcome would then refuse the REAL success
+        # as an amount mismatch and the payment would look failed. Treat it as a transient gateway
+        # problem (retry via reconcile) until the UAT status shape is confirmed, rather than a false 0.
+        if status == SUCCEEDED and amount_minor <= 0:
+            raise GatewayUnavailable("TuwaiqPay: success with unparseable amount (retry)")
         return PaymentOutcome(
             status=status, provider=self.driver,
             provider_ref=str(data.get("transactionId", provider_ref)),
-            amount_minor=to_minor(bill.get("amount", 0) or 0, cur),
+            amount_minor=amount_minor,
             currency=cur, verified=True, raw={"status": status})
 
     def verify_webhook(self, *, headers: dict[str, str], body: bytes,
@@ -185,11 +192,11 @@ class TuwaiqPayGateway:
         tx_id = str(details.get("transactionId", ""))
         if not tx_id:
             return PaymentOutcome(status=PENDING, provider=self.driver, verified=False)
-        try:
-            confirmed = self.fetch_status(provider_ref=tx_id, currency=stored_currency)
-        except GatewayUnavailable:
-            return PaymentOutcome(status=PENDING, provider=self.driver, provider_ref=tx_id,
-                                  verified=False)
+        # payments-007: do NOT swallow an unreachable gateway into a verified=False PENDING — that is
+        # indistinguishable from "verified, nothing to do" and makes the route 200 the gateway into
+        # NEVER retrying, silently dropping the payment. Let GatewayUnavailable propagate so the webhook
+        # route can 503 and the gateway retries (the reconcile sweep is the backstop).
+        confirmed = self.fetch_status(provider_ref=tx_id, currency=stored_currency)
         # verified only for a settled outcome our own GET confirmed; a still-pending webhook is not
         # actionable. The gateway's numeric detail id is the per-notification dedupe key.
         confirmed.verified = confirmed.status in (SUCCEEDED, FAILED, CANCELLED)
