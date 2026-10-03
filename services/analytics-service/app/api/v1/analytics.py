@@ -193,6 +193,9 @@ async def update_report(report_id: str, body: ReportIn, request: Request,
     r = ReportDef(id=existing.id, tenant=existing.tenant, name=body.name,
                   query=body.query.model_dump(exclude_none=True), created=existing.created)
     await ReportStore(c.datastore).save(r)
+    await request.app.state.auditor.record(
+        "analytics.report_updated", actor=p.subject, tenant=existing.tenant,
+        resource=f"report:{existing.id}", ip=request.client.host if request.client else "")
     return r.to_dict()
 
 
@@ -213,12 +216,6 @@ async def export_query(body: QueryIn, request: Request, p: Principal = Depends(_
     # Record under the tenant whose data is ACTUALLY exported (a platform operator may export another
     # tenant via body.tenant); attributing it to the operator's own tenant misrecords whose data left.
     export_tenant = _tenant(p, body.tenant)
-    # Write-ahead: a critical action the log cannot take must not happen at all, so this
-    # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
-    # already succeeded, and leave it unrecorded.
-    await request.app.state.auditor.record(
-        "analytics.exported", actor=p.subject, tenant=export_tenant, resource="analytics_export",
-        ip=request.client.host if request.client else "")
     svc = build_query(request)
     try:
         result = await svc.query(
@@ -236,5 +233,11 @@ async def export_query(body: QueryIn, request: Request, p: Principal = Depends(_
         # The null warehouse does not pretend to export. Say so; don't return an empty file.
         raise HTTPException(status_code=501, detail="WAREHOUSE_NOT_CONFIGURED")
     content_type, payload = out
+    # Record only a COMPLETED export (analytics-009): the old write-ahead logged analytics.exported
+    # before the query ran, so a 400 (bad query) or 501 (no warehouse) was recorded as a successful
+    # export. The data leaves in this response, so recording here is still before it reaches the caller.
+    await request.app.state.auditor.record(
+        "analytics.exported", actor=p.subject, tenant=export_tenant, resource="analytics_export",
+        ip=request.client.host if request.client else "")
     return Response(content=payload, media_type=content_type,
                     headers={"Content-Disposition": 'attachment; filename="analytics.csv"'})

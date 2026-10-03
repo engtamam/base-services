@@ -193,8 +193,13 @@ class QueryService:
         conv = [{"step": s, "count": counts[i],
                  "rate": (counts[i] / counts[0]) if counts[0] else 0.0}
                 for i, s in enumerate(steps)]
-        return {"steps": conv, "entered": counts[0],
-                "converted": counts[-1] if counts else 0, "truncated": truncated}
+        out = {"steps": conv, "entered": counts[0],
+               "converted": counts[-1] if counts else 0, "truncated": truncated}
+        if truncated:
+            # Not a silent boolean (analytics-009/019): the window exceeded the scan cap, so these rates
+            # are computed over a PARTIAL set — say so loudly so a consumer does not read them as exact.
+            out["warning"] = "RESULTS_TRUNCATED: window exceeded the event scan cap; rates are approximate — narrow the range"
+        return out
 
     # ── retention cohort ────────────────────────────────────────────────────────
     async def retention(self, *, tenant: str, event_name: str, cohort_start: float,
@@ -213,7 +218,10 @@ class QueryService:
                       and e["subject"] in cohort}
             out.append({"period": p, "retained": len(active),
                         "rate": (len(active) / len(cohort)) if cohort else 0.0})
-        return {"cohort_size": len(cohort), "periods": out, "truncated": truncated}
+        result = {"cohort_size": len(cohort), "periods": out, "truncated": truncated}
+        if truncated:
+            result["warning"] = "RESULTS_TRUNCATED: window exceeded the event scan cap; rates are approximate — narrow the range"
+        return result
 
     # ── export ──────────────────────────────────────────────────────────────────
     def export(self, rows: list[dict]) -> tuple[str, bytes] | None:

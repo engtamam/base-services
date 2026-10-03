@@ -32,6 +32,12 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "critical": False,
     },
     {
+        "action": "analytics.report_updated",
+        "source": "user",
+        "critical": False,
+        "resource": "report",
+    },
+    {
         "action": "analytics.exported",
         "source": "user",
         "critical": True,

@@ -34,7 +34,8 @@
       "line": 171,
       "scenario": "An operator changes a saved report's stored query via PUT /api/v1/analytics/reports/{id}. create_report records 'analytics.report_created' and delete_report records 'analytics.report_deleted', but update_report records nothing. A report whose query was silently repointed (e.g. to another metric) leaves no trail; the auditable_actions.py declaration also omits any 'analytics.report_updated' action.",
       "evidence": "async def update_report(report_id: str, body: ReportIn, request: Request,\n                        p: Principal = Depends(_MANAGE)) -> dict:\n    ...\n    await ReportStore(c.datastore).save(r)\n    return r.to_dict()",
-      "recommendation": "Declare and emit an 'analytics.report_updated' audit event in update_report, matching create/delete."
+      "recommendation": "Declare and emit an 'analytics.report_updated' audit event in update_report, matching create/delete.",
+      "status": "fixed"
     },
     {
       "id": "analytics-003",
@@ -45,7 +46,8 @@
       "line": 37,
       "scenario": "admin_actions.py and admin help text document percentile as '0-100, only used when agg is percentile'. A caller following the docs sends percentile=95 for a p95 query; query.validate raises 'PERCENTILE_MUST_BE_BETWEEN_0_AND_1' → a guaranteed 400. The documented contract cannot succeed.",
       "evidence": "if agg == \"percentile\":\n        if percentile is None or not (0.0 < float(percentile) < 1.0):\n            raise QueryError(\"PERCENTILE_MUST_BE_BETWEEN_0_AND_1\")   # while admin_actions help says \"0-100\"",
-      "recommendation": "Make the API and the help text agree — either accept 0-100 and divide by 100 internally, or fix the help/params to say 0<p<1."
+      "recommendation": "Make the API and the help text agree — either accept 0-100 and divide by 100 internally, or fix the help/params to say 0<p<1.",
+      "status": "fixed"
     },
     {
       "id": "analytics-004",
@@ -56,7 +58,8 @@
       "line": 26,
       "scenario": "The agg help reads 'count, sum, avg, min, max or percentile'. AGGREGATIONS = ('count','sum','avg','unique','percentile'). An operator following the panel chooses agg='max' → 400 AGG_MUST_BE_ONE_OF; and the real 'unique' (distinct-count, the flagship HLL feature) is never surfaced to operators at all.",
       "evidence": "\"help\": \"count, sum, avg, min, max or percentile. Defaults to count.\"   # vs AGGREGATIONS = (\"count\", \"sum\", \"avg\", \"unique\", \"percentile\")",
-      "recommendation": "Correct the help strings in admin_actions.py (query + export params) to the actual aggregation set."
+      "recommendation": "Correct the help strings in admin_actions.py (query + export params) to the actual aggregation set.",
+      "status": "fixed"
     },
     {
       "id": "analytics-005",
@@ -112,7 +115,8 @@
       "line": 205,
       "scenario": "export_query write-aheads the critical audit record, then runs the query. If the query raises QueryError (400) or the warehouse is null (501 WAREHOUSE_NOT_CONFIGURED), nothing was ever exported, yet the audit log now shows 'analytics.exported' for that actor/tenant. For a critical, fail-closed action this over-records data exfiltration that did not happen, muddying breach investigations.",
       "evidence": "await request.app.state.auditor.record(\n        \"analytics.exported\", actor=p.subject, tenant=export_tenant, resource=\"analytics_export\", ...)\n    svc = build_query(request)\n    try:\n        result = await svc.query(...)\n    except QueryError as e:\n        raise HTTPException(status_code=400, ...)\n    ...\n    if out is None:\n        raise HTTPException(status_code=501, ...)",
-      "recommendation": "Validate the query and warehouse availability before the write-ahead record, or emit a distinct outcome (attempted vs. completed) so a 400/501 is not logged as a completed export."
+      "recommendation": "Validate the query and warehouse availability before the write-ahead record, or emit a distinct outcome (attempted vs. completed) so a 400/501 is not logged as a completed export.",
+      "status": "fixed"
     },
     {
       "id": "analytics-010",
@@ -135,7 +139,8 @@
       "line": 126,
       "scenario": "The integration suite tests count/sum only. There is no test that a filtered query returns only matching rows (which would have caught analytics-001), no test of agg='unique' (HLL union) correctness, and no test of agg='percentile' (histogram quantile). The two headline features and the filter path are unverified end-to-end.",
       "evidence": "def test_query_is_cached_and_invalidated_by_a_write(client):\n    q = {\"metric\": \"cq\", \"agg\": \"count\", ...}   # only count/sum appear in the API tests; no filters/percentile/unique",
-      "recommendation": "Add tests: filtered query returns only matching cells; unique across buckets equals distinct subjects; percentile over merged buckets is within tolerance."
+      "recommendation": "Add tests: filtered query returns only matching cells; unique across buckets equals distinct subjects; percentile over merged buckets is within tolerance.",
+      "status": "fixed"
     },
     {
       "id": "analytics-012",
@@ -223,7 +228,8 @@
       "line": 169,
       "scenario": "for_tenant_window caps at _EXPORT_MAX (100,000) and returns truncated=True. funnel/retention then compute conversion/retention rates over whatever 100k rows fit, returning fully-formed rates as if complete. The only signal is a 'truncated' boolean many clients ignore; a high-volume tenant gets materially wrong funnel/retention numbers that look authoritative.",
       "evidence": "rows, truncated = await self._events.for_tenant_window(tenant, start_ts, end_ts)\n        ...\n        return {\"steps\": conv, \"entered\": counts[0], \"converted\": counts[-1] if counts else 0, \"truncated\": truncated}",
-      "recommendation": "When truncated, either 400 with RANGE_TOO_LARGE-style guidance or refuse to return rates; at minimum elevate the truncation to a top-level error field, not a silent boolean."
+      "recommendation": "When truncated, either 400 with RANGE_TOO_LARGE-style guidance or refuse to return rates; at minimum elevate the truncation to a top-level error field, not a silent boolean.",
+      "status": "fixed"
     },
     {
       "id": "analytics-020",
