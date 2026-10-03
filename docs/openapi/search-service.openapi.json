@@ -1,12 +1,56 @@
 {
   "components": {
     "schemas": {
+      "BulkDoc": {
+        "properties": {
+          "boosts": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Boosts",
+            "type": "object"
+          },
+          "created": {
+            "default": 0.0,
+            "title": "Created",
+            "type": "number"
+          },
+          "fields": {
+            "additionalProperties": true,
+            "title": "Fields",
+            "type": "object"
+          },
+          "id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "index": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]+$",
+            "title": "Index",
+            "type": "string"
+          },
+          "owner": {
+            "default": "",
+            "title": "Owner",
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "id"
+        ],
+        "title": "BulkDoc",
+        "type": "object"
+      },
       "BulkIn": {
         "properties": {
           "docs": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/BulkDoc"
             },
             "title": "Docs",
             "type": "array"
