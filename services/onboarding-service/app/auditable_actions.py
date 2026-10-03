@@ -32,6 +32,14 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "an unattributable force is indistinguishable from an attacker with an operator token",
     },
     {
+        "action": "flow.force_removed",
+        "source": "admin",
+        "critical": True,
+        "resource": "onboarding_flow",
+        "why": "removing a hand-force resumes the live check and changes who is satisfying a "
+               "requirement by hand; like the force it reverses, it must be attributable (onboarding-008)",
+    },
+    {
         "action": "provisioning.completed",
         "source": "user",
         "critical": False,

@@ -112,7 +112,8 @@
       "line": 30,
       "scenario": "check() reads the forced row first and returns SATISFIED unconditionally before ever consulting the live source. force() writes that row with no expiry. So once an operator force-completes 'business_verified' (which gates the welcome_credit money grant), the requirement reads satisfied forever — even after the underlying verification lapses or is revoked, and even if the force was a mistake or an attacker with an operator token. The whole design (evaluator.py) prides itself on regression being honest ('an expired verification reverts the flow'); a forced fact defeats that silently and indefinitely.",
       "evidence": "forced = await self._store.get(_FORCED, self._key(tenant, subject, req.get(\"id\", fact))); if forced: return Answer(status=SATISFIED, detail=f\"forced by {forced.get('actor', ...)}\")",
-      "recommendation": "Store an expiry/TTL on a forced fact and treat an expired force as absent so the live check resumes; provide an un-force path; and re-audit on force expiry. At minimum bound force to a configured max duration."
+      "recommendation": "Store an expiry/TTL on a forced fact and treat an expired force as absent so the live check resumes; provide an un-force path; and re-audit on force expiry. At minimum bound force to a configured max duration.",
+      "status": "fixed"
     },
     {
       "id": "onboarding-009",
@@ -123,7 +124,8 @@
       "line": 136,
       "scenario": "flows.validate() treats a grant with no once_per as a non-fatal warning (_warning) and boot does not reject it. When claim_grant calls issue() with once_per='' , _uniqueness_key returns 'call:'+uuid4 — a key that never collides — so the ledger.find never matches and the entitlement idempotency_key differs every call. The customer can call /claim-grant repeatedly (subject only to the rate limiter) and collect the money-like grant on every call. The file's own docstring names this the exact drain vector of the reference implementations, yet the code path implements it.",
       "evidence": "if once_per in (\"\", ONCE_PER_NONE): import uuid; return f\"call:{uuid.uuid4().hex}\"   # + flows.py:74 req.setdefault(\"_warning\", \"grants without once_per can be issued repeatedly\")",
-      "recommendation": "Make a money-like grant (amount>0 / non-empty currency) without once_per a FATAL flow-validation error at boot rather than a warning, so an uncapped monetary grant cannot ship. Reserve the per-call key strictly for explicitly non-monetary grants (once_per='none')."
+      "recommendation": "Make a money-like grant (amount>0 / non-empty currency) without once_per a FATAL flow-validation error at boot rather than a warning, so an uncapped monetary grant cannot ship. Reserve the per-call key strictly for explicitly non-monetary grants (once_per='none').",
+      "status": "fixed"
     },
     {
       "id": "onboarding-010",
@@ -134,7 +136,8 @@
       "line": 110,
       "scenario": "evaluate() awaits _ask() inside a for-loop over every requirement, and each remote source is a blocking urlopen offloaded to a thread with ONBOARDING_SOURCE_TIMEOUT_SECONDS (default 5s). For the shipped b2b flow (identity, tenant, verification, plus locals) that is several internal round-trips run back-to-back, so /next and /claim-grant latency is the SUM of all source latencies and, worst case, N * 5s on a slow platform. These are independent reads that could run concurrently.",
       "evidence": "for req in flow.get(\"requirements\") or []: source_name, _, fact = req[\"satisfied_by\"].partition(\".\"); answer = await self._ask(source_name, fact, tenant, subject, req)",
-      "recommendation": "Gather the independent source lookups with asyncio.gather (dedupe by source so one service is asked once per distinct fact), then compute blocking after all answers are in as today. This turns worst-case latency from sum to max."
+      "recommendation": "Gather the independent source lookups with asyncio.gather (dedupe by source so one service is asked once per distinct fact), then compute blocking after all answers are in as today. This turns worst-case latency from sum to max.",
+      "status": "fixed"
     },
     {
       "id": "onboarding-011",

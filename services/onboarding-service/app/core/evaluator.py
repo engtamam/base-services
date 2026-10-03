@@ -19,6 +19,7 @@ completion grants, precisely while the platform was unhealthy.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -106,12 +107,30 @@ class Evaluator:
 
     async def evaluate(self, flow: dict[str, Any], *, tenant: str, subject: str) -> FlowState:
         answers: dict[str, RequirementState] = {}
+        reqs = flow.get("requirements") or []
 
-        for req in flow.get("requirements") or []:
+        # onboarding-010: ask the independent sources CONCURRENTLY (latency = max, not sum), and DEDUPE
+        # remote lookups by (source, fact) so one service is queried once per distinct fact even when
+        # several requirements share it. Local facts are checked per-requirement (local.check reads req).
+        remote: dict[tuple[str, str], Any] = {}
+        for req in reqs:
             source_name, _, fact = req["satisfied_by"].partition(".")
-            answer = await self._ask(source_name, fact, tenant, subject, req)
-            answers[req["id"]] = RequirementState(
-                id=req["id"],
+            if source_name != LOCAL and (source_name, fact) not in remote:
+                # NB: build the task only when the key is new — setdefault would eagerly create (and
+                # schedule) a duplicate coroutine for a fact already queued, defeating the dedupe.
+                remote[(source_name, fact)] = asyncio.ensure_future(
+                    self._ask(source_name, fact, tenant, subject, req))
+
+        async def _resolve(req):
+            source_name, _, fact = req["satisfied_by"].partition(".")
+            if source_name != LOCAL:
+                return req["id"], await remote[(source_name, fact)]
+            return req["id"], await self._ask(source_name, fact, tenant, subject, req)
+
+        for rid, answer in await asyncio.gather(*[_resolve(r) for r in reqs]):
+            req = next(r for r in reqs if r["id"] == rid)
+            answers[rid] = RequirementState(
+                id=rid,
                 status=answer.status,
                 optional=bool(req.get("optional")),
                 scope=req.get("scope", "user"),

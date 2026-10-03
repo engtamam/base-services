@@ -22,16 +22,27 @@ _GRANTS = "onboarding_grants"
 
 
 class LocalFacts:
-    def __init__(self, store, clock) -> None:
+    def __init__(self, store, clock, default_force_ttl: float = 0.0) -> None:
         self._store = store
         self._clock = clock
+        # onboarding-008: a force used to be PERMANENT and short-circuited the live check for ever. A
+        # positive default bounds every force to a max lifetime; an expired force is treated as absent so
+        # the real check resumes. 0 means "no default bound" (a caller may still pass an explicit ttl).
+        self._default_ttl = float(default_force_ttl)
 
     async def check(self, *, fact: str, tenant: str, subject: str, req: dict) -> Answer:
-        forced = await self._store.get(_FORCED, self._key(tenant, subject, req.get("id", fact)))
+        key = self._key(tenant, subject, req.get("id", fact))
+        forced = await self._store.get(_FORCED, key)
         if forced:
-            return Answer(status=SATISFIED,
-                          detail=f"forced by {forced.get('actor', 'an operator')}: "
-                                 f"{forced.get('reason', '')}")
+            expires_at = float(forced.get("expires_at", 0) or 0)
+            if expires_at and self._clock.now() >= expires_at:
+                # onboarding-008: the force has EXPIRED — drop it and fall through to the live check,
+                # instead of satisfying the requirement for ever off a stale override.
+                await self._store.delete(_FORCED, key)
+            else:
+                return Answer(status=SATISFIED,
+                              detail=f"forced by {forced.get('actor', 'an operator')}: "
+                                     f"{forced.get('reason', '')}")
         if fact == "granted":
             # Scoped by the requirement's own id, so two grants in one flow do not satisfy each
             # other. Tenant-scoped grants are answered for the tenant, not the person. The DEFAULT is
@@ -44,11 +55,22 @@ class LocalFacts:
         return Answer(status=UNSATISFIED, detail=f"unknown local fact {fact!r}")
 
     async def force(self, *, tenant: str, subject: str, requirement: str, actor: str,
-                    reason: str) -> None:
+                    reason: str, ttl_seconds: float | None = None) -> float:
+        """Mark a requirement satisfied by hand, for a BOUNDED time. ttl_seconds overrides the configured
+        default; the resulting expiry is returned (0 when no bound applies). onboarding-008."""
+        now = self._clock.now()
+        ttl = self._default_ttl if ttl_seconds is None else float(ttl_seconds)
+        expires_at = now + ttl if ttl and ttl > 0 else 0.0
         await self._store.put(_FORCED, self._key(tenant, subject, requirement), {
             "id": self._key(tenant, subject, requirement), "tenant": tenant, "subject": subject,
             "requirement": requirement, "actor": actor, "reason": reason,
-            "at": self._clock.now()})
+            "at": now, "expires_at": expires_at})
+        return expires_at
+
+    async def unforce(self, *, tenant: str, subject: str, requirement: str) -> bool:
+        """Remove a hand-force so the live check resumes immediately (onboarding-008). Returns whether a
+        force existed."""
+        return await self._store.delete(_FORCED, self._key(tenant, subject, requirement))
 
     async def mark_granted(self, *, requirement: str, tenant: str, subject: str,
                            scope: str, reference: str) -> None:

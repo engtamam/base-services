@@ -188,6 +188,9 @@ class Settings(BaseSettings):
     #   "tenant=http://tenant-service:8000/internal/tenants|/internal/tenants/{id}"
     ONBOARDING_PROVISIONERS: str = ""
     ONBOARDING_PROVISION_TIMEOUT_SECONDS: int = 10
+    # onboarding-008: a hand-forced requirement expires after this many seconds (an expired force is
+    # treated as absent so the live check resumes). Default 90 days; 0 disables the default bound.
+    ONBOARDING_FORCE_TTL_SECONDS: int = 7_776_000
 
     # ── audit trail (Phase 38) — where privileged actions are witnessed ───────
     # `null` records NOTHING and says so; the boot guard below refuses it in production, because a
@@ -457,6 +460,22 @@ class Settings(BaseSettings):
                 raise ValueError(
                     f"a flow grants {kind!r} but ONBOARDING_GRANTS does not define it — the grant "
                     f"would be refused at issue time and the flow could never complete")
+        # onboarding-009: a MONEY-LIKE grant (amount>0 or a currency) without a once_per uniqueness key
+        # is farmable — a customer re-runs onboarding and is issued the credit again. flows.validate only
+        # WARNS (it has no grant specs); here we have both, so make it FATAL. once_per is reserved for
+        # genuinely non-monetary grants (a tutorial flag, a welcome email).
+        for f in flows:
+            for r in f["requirements"]:
+                kind = r.get("grants")
+                if not kind or r.get("once_per"):
+                    continue
+                spec = grants.get(kind, {})
+                money_like = int(spec.get("amount", 0) or 0) > 0 or bool(str(spec.get("currency", "")))
+                if money_like:
+                    raise ValueError(
+                        f"flow {f['flow']!r} requirement {r['id']!r} grants money-like {kind!r} "
+                        f"(amount/currency set) without a once_per key — it could be issued repeatedly "
+                        f"(farmable). Add once_per (e.g. 'verified_identity').")
 
     @property
     def is_production(self) -> bool:

@@ -268,6 +268,7 @@ def build_container(settings: Settings) -> Container:
             return time.time()
 
     container.clock = _SystemClock()
-    container.local_facts = LocalFacts(container.datastore, container.clock)
+    container.local_facts = LocalFacts(container.datastore, container.clock,
+                                       default_force_ttl=settings.ONBOARDING_FORCE_TTL_SECONDS)
     container.grant_ledger = GrantLedger(container.datastore, container.clock)
     return container

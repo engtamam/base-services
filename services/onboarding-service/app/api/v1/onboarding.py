@@ -59,6 +59,8 @@ class ProfileIn(BaseModel):
 class ForceIn(BaseModel):
     requirement: str = Field(min_length=1, max_length=128)
     reason: str = Field(min_length=1, max_length=512)
+    # onboarding-008: optional override of the configured force TTL (seconds). Omitted → the default bound.
+    ttl_seconds: int | None = Field(default=None, ge=0)
 
 
 # ── user tier ────────────────────────────────────────────────────────────────
@@ -172,9 +174,24 @@ async def force_complete(request: Request, subject: str, body: ForceIn,
         resource=f"subject:{subject_ref(get_settings().PII_SALT, principal.tenant, subject)}",
         metadata={"requirement": body.requirement, "reason": body.reason})
     ledger = request.app.state.container.local_facts
-    await ledger.force(tenant=principal.tenant, subject=subject,
-                       requirement=body.requirement, actor=principal.subject, reason=body.reason)
-    return {"forced": body.requirement, "subject": subject}
+    expires_at = await ledger.force(tenant=principal.tenant, subject=subject,
+                                    requirement=body.requirement, actor=principal.subject,
+                                    reason=body.reason, ttl_seconds=getattr(body, "ttl_seconds", None))
+    return {"forced": body.requirement, "subject": subject, "expires_at": expires_at}
+
+
+@router.delete("/admin/force/{subject}", dependencies=[Depends(_ADMIN)])
+async def unforce_complete(request: Request, subject: str, requirement: str,
+                           principal: Principal = Depends(_ADMIN)) -> dict:
+    """Remove a hand-force so the live check resumes immediately (onboarding-008). Audited like the
+    force it reverses — un-forcing is also a change to who is satisfying a requirement by hand."""
+    await request.app.state.auditor.record(
+        "flow.force_removed", actor=principal.subject, tenant=principal.tenant,
+        resource=f"subject:{subject_ref(get_settings().PII_SALT, principal.tenant, subject)}",
+        metadata={"requirement": requirement})
+    ledger = request.app.state.container.local_facts
+    removed = await ledger.unforce(tenant=principal.tenant, subject=subject, requirement=requirement)
+    return {"unforced": requirement, "subject": subject, "existed": removed}
 
 
 @router.get("/admin/flows", dependencies=[Depends(_ADMIN)])
