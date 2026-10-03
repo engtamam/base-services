@@ -204,6 +204,17 @@ class BreachIn(BaseModel):
 @router.post("/consent/grant", status_code=201)
 async def grant(request: Request, body: ConsentIn, principal: Principal = Depends(_ADMIN)) -> dict:
     t = _tenant(principal, body.tenant)     # platform op may target a shop; a tenant admin -> own
+    if body.basis != "self":
+        # WRITE-AHEAD + CRITICAL (compliance-023): delegated consent (a parent/carer/attorney acting
+        # for someone else) is the claim most likely to be disputed, and consent.guardian_recorded is
+        # declared critical — so it must be witnessed BEFORE the grant. Recorded after (the old order),
+        # an AuditUnavailable would let the delegated grant commit unwitnessed, which is the exact gap
+        # the write-ahead pattern closes. A self-consent is the ordinary case and is not pre-recorded.
+        await request.app.state.auditor.record(
+            "consent.guardian_recorded", actor=principal.subject,
+            tenant=t, resource=f"consent:{body.purpose}",
+            ip=request.client.host if request.client else "",
+            metadata={"basis": body.basis, "relation": body.relation})
     try:
         c = await build_consent(request).grant(
             tenant=t, subject=body.subject, purpose=body.purpose,
@@ -211,18 +222,8 @@ async def grant(request: Request, body: ConsentIn, principal: Principal = Depend
             actor=principal.subject, ip=request.client.host if request.client else "",
             basis=body.basis, consented_by=body.consented_by, relation=body.relation,
             subject_born_at=body.subject_born_at)
-        if body.basis != "self":
-            # Delegated consent only. A self-consent is the ordinary case and recording every one
-            # would bury the log; the exception is the claim someone may later dispute.
-            await request.app.state.auditor.record(
-                "consent.guardian_recorded", actor=principal.subject,
-                tenant=t, resource=f"consent:{body.purpose}",
-                ip=request.client.host if request.client else "",
-                metadata={"basis": body.basis, "relation": body.relation})
-        # AFTER the grant, not write-ahead. The write-ahead pattern exists so a CRITICAL action
-        # cannot happen unwitnessed — it lets AuditUnavailable refuse the action. These routine
-        # actions are fail-open by declaration, so the auditor never refuses them, and recording
-        # first would only log grants that then failed validation.
+        # The routine grant record stays AFTER — fail-open by declaration, so recording it first would
+        # only log grants that then failed validation.
         await request.app.state.auditor.record(
             "consent.granted", actor=principal.subject, tenant=t,
             resource=f"consent:{body.purpose}",
@@ -272,8 +273,13 @@ async def create_dsar(request: Request, body: DsarIn, principal: Principal = Dep
         metadata={"type": body.type, "created": created})
     out = d.public()
     out["created"] = created
+    # Do NOT return the verification token to the OPERATOR (compliance-005): handing it back to the
+    # operator who opened the request defeats the whole point of verification — they could confirm a
+    # request about someone else. It is delivered only out-of-band to the subject's own channel
+    # (the /internal/.../verification-code seam). The self-service /me/dsar route below is different:
+    # there the caller IS the subject, so they rightly receive their own token.
     if created:
-        out["verification_token"] = d.verification_token   # returned ONCE, to send to the subject
+        out["verification_delivery"] = "out_of_band"
     return out
 
 

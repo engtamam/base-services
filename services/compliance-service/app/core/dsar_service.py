@@ -199,7 +199,8 @@ class DsarService:
         if d.derive_completion(self._clock.now()):
             await self._emit("dsar.completed", {"id": d.id, "type": d.type})
         await self._dsars.save(d)
-        return {"ok": True, "status": d.status, "remaining": [k for k, v in d.targets.items() if not v]}
+        return {"ok": True, "status": d.status, "tenant": d.tenant,
+                "remaining": [k for k, v in d.targets.items() if not v]}
 
     async def get(self, dsar_id: str) -> Dsar | None:
         return await self._dsars.get(dsar_id)

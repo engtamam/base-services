@@ -76,7 +76,8 @@
       "line": 276,
       "scenario": "create_dsar (operator, _ADMIN) returns d.verification_token in the HTTP response. The token exists precisely to prove the SUBJECT controls their channel before any access/export data is released. Handed back to the API caller, an operator with compliance.manage can create an access/export DSAR for ANY subject in the tenant, self-verify with the token they just received, then process() and receive the exported PII fan-out — the verification control provides zero protection on the operator path (the docstring in dsar_service.py calls this the 'best data-exfiltration tool an attacker ever had').",
       "evidence": "if created:\n        out[\"verification_token\"] = d.verification_token   # returned ONCE, to send to the subject",
-      "recommendation": "Do not return the token in the operator-tier response; deliver it only out-of-band to the subject's own channel (the /internal/.../verification-code seam already exists for product-owned delivery). Reserve token return for the /me/dsar self-service path."
+      "recommendation": "Do not return the token in the operator-tier response; deliver it only out-of-band to the subject's own channel (the /internal/.../verification-code seam already exists for product-owned delivery). Reserve token return for the /me/dsar self-service path.",
+      "status": "fixed"
     },
     {
       "id": "compliance-006",
@@ -131,7 +132,8 @@
       "line": 78,
       "scenario": "RetentionEnforcer deletes rows and only emits a telemetry 'retention.run' summary; the audit sink gets one generic write-ahead 'retention.purged' (actor=\"\", tenant=\"\", no detail) from the route. There is no audit record naming WHICH records (collection/ids/count per collection) were deleted or held. When a regulator asks 'what did you delete under retention and when', the tamper-evident audit chain cannot answer — deletion of consent proofs / DSARs / breach records happens without a witnessed, per-run detail entry.",
       "evidence": "await self._store.delete(collection, row[\"id\"])\n            purged += 1",
-      "recommendation": "Emit an audit record after the run with per-collection purged/held counts (and ideally the id ranges), so retention-driven deletions are as auditable as erasure and hold actions."
+      "recommendation": "Emit an audit record after the run with per-collection purged/held counts (and ideally the id ranges), so retention-driven deletions are as auditable as erasure and hold actions.",
+      "status": "fixed"
     },
     {
       "id": "compliance-011",
@@ -164,7 +166,8 @@
       "line": 21,
       "scenario": "_json_any_map swallows malformed/typo'd JSON and returns {}. It backs INTERNAL_ROUTE_POLICY_JSON, INTERNAL_CALLER_PUBLIC_KEYS_JSON, INTERNAL_CALLER_JWKS_JSON and RATELIMIT_ROUTES. A misconfigured INTERNAL_ROUTE_POLICY_JSON (e.g. a trailing comma) becomes an EMPTY policy — and an absent route policy is default-open (any authenticated caller admitted), so a config typo silently widens the internal tier rather than refusing to start. Contrast the privacy_targets/retention_rules parsers, which correctly raise on malformed input.",
       "evidence": "try:\n        val = _json.loads(raw)\n    except (ValueError, TypeError):\n        return {}\n    return val if isinstance(val, dict) else {}",
-      "recommendation": "For security-bearing maps, raise ValueError on malformed JSON (fail-fast) as privacy_targets does, rather than degrading to {} which is fail-open for a default-open policy layer."
+      "recommendation": "For security-bearing maps, raise ValueError on malformed JSON (fail-fast) as privacy_targets does, rather than degrading to {} which is fail-open for a default-open policy layer.",
+      "status": "fixed"
     },
     {
       "id": "compliance-014",
@@ -219,7 +222,8 @@
       "line": 317,
       "scenario": "target_ack records the DSAR-completing 'dsar.target_acked' event with tenant=res.get(\"tenant\", \"\"). DsarService.ack_target returns {\"ok\", \"status\", \"remaining\"} — there is no 'tenant' key — so every target-ack audit entry is written with an empty tenant. The entry that closes a DSAR (an assertion that personal data was destroyed) is un-attributable to a tenant in the audit trail.",
       "evidence": "await request.app.state.auditor.record(\n        \"dsar.target_acked\", actor=f\"service:{body.service}\", tenant=res.get(\"tenant\", \"\"), ...)",
-      "recommendation": "Have ack_target return the DSAR's tenant (it has d.tenant in hand) and record it, or look up the DSAR's tenant in the route before recording."
+      "recommendation": "Have ack_target return the DSAR's tenant (it has d.tenant in hand) and record it, or look up the DSAR's tenant in the route before recording.",
+      "status": "fixed"
     },
     {
       "id": "compliance-019",
@@ -274,7 +278,8 @@
       "line": 217,
       "scenario": "The grant route records 'consent.guardian_recorded' AFTER the store write and treats the whole grant path as fail-open (auditor never refuses). But the route's own comment calls delegated consent 'the claim someone may later dispute' — exactly the class of action the write-ahead/fail-closed pattern (used for withdraw, process, holds) exists for. If the audit sink is unavailable when a guardian consent is granted, the consent is persisted with no witness of who recorded it, on what basis, for whom.",
       "evidence": "if body.basis != \"self\":\n            ... await request.app.state.auditor.record(\n                \"consent.guardian_recorded\", ...)",
-      "recommendation": "Treat guardian/legal_representative consent as a critical, write-ahead (fail-closed) audit action so a delegated-capacity claim cannot be recorded unwitnessed, while keeping self-consent fail-open."
+      "recommendation": "Treat guardian/legal_representative consent as a critical, write-ahead (fail-closed) audit action so a delegated-capacity claim cannot be recorded unwitnessed, while keeping self-consent fail-open.",
+      "status": "fixed"
     },
     {
       "id": "compliance-024",

@@ -19,15 +19,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _json_any_map(raw: str) -> dict:
-    """Parse a JSON object env var into a dict, tolerating empty/malformed input by returning {} —
-    a mis-set map must not crash boot; the driver it feeds simply sees no keys."""
+    """Parse a JSON object env var into a dict. Empty/unset => {}. MALFORMED non-empty input RAISES
+    (fail-fast, like privacy_targets): these maps are security-bearing policy (default-open on absence),
+    so swallowing a typo into {} fails OPEN — the policy the operator set admits everyone (compliance-013)."""
     if not raw or not raw.strip():
         return {}
     try:
         val = _json.loads(raw)
-    except (ValueError, TypeError):
-        return {}
-    return val if isinstance(val, dict) else {}
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"malformed JSON config map (fail-closed rather than silently empty): {exc}") from exc
+    if not isinstance(val, dict):
+        raise ValueError(f"JSON config map must be an object, got {type(val).__name__}")
+    return val
 
 
 def _json_str_map(raw: str) -> dict[str, str]:

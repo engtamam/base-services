@@ -388,8 +388,22 @@ async def run_retention(request: Request) -> dict:
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
         "retention.purged", actor="", tenant="", resource="compliance_records",
-        ip=request.client.host if request.client else "")
-    return await build_retention(request).run()
+        ip=request.client.host if request.client else "", metadata={"phase": "started"})
+    result = await build_retention(request).run()
+    # After-run outcome (compliance-010): the write-ahead above proves a run STARTED; this records WHAT
+    # it deleted (per-collection purged/held counts), so retention-driven deletion of legal records is
+    # as auditable as erasure, not just a telemetry counter. Best-effort: the purge already committed.
+    try:
+        await request.app.state.auditor.record(
+            "retention.purged", actor="", tenant="", resource="compliance_records",
+            ip=request.client.host if request.client else "",
+            metadata={"phase": "completed",
+                      "purged": result.get("purged"),
+                      "held_by_legal_hold": result.get("held_by_legal_hold"),
+                      "collections": result.get("collections")})
+    except Exception:  # noqa: BLE001 — the deletion happened; a missed outcome log must not 500 the cron
+        pass
+    return result
 
 
 @router.get("/manifest", dependencies=[Depends(require_internal_token)])
