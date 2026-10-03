@@ -38,6 +38,13 @@ def _granter_holds(cap: str, granter_caps: frozenset[str], wildcard: bool) -> bo
     return False
 
 
+def holds_cap(cap: str, caps, *, wildcard: bool = True) -> bool:
+    """Public wildcard-aware membership test (authz-006): a holder of `*` or `x.*` holds `x.cap`, the
+    SAME semantics the PDP decides with. Operator detection must use this, not `cap in caps`, or a
+    wildcard holder is classified differently by the admin routes than by the decision engine."""
+    return _granter_holds(cap, frozenset(caps or ()), wildcard)
+
+
 def caps_exceeding_granter(
     caps: Iterable[str],
     granter_caps: frozenset[str],

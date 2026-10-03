@@ -85,7 +85,7 @@
       "scenario": "_op_tenant, _guard_caps and _guard_policy all decide operator status via `\"platform.authz\" in principal.caps` (exact). A principal holding '*' or 'platform.*' — which the RBAC engine treats as holding platform.authz — is NOT recognized as an operator and is forced down the tenant-scoped path (subset rule, denylist, forced own-tenant). This is inconsistent with the decision engine and can both deny a real operator and, combined with authz-001/authz-005, produce surprising allow/deny splits depending on which code path evaluates the same token.",
       "evidence": "def _op_tenant(principal, body_tenant=None):\n    if \"platform.authz\" in principal.caps:\n        return body_tenant or principal.tenant or \"global\"",
       "recommendation": "Use cap_matches('platform.authz', principal.caps, wildcard=True) for the operator test so wildcard holders are classified consistently with the PDP.",
-      "status": "pending"
+      "status": "fixed"
     },
     {
       "id": "authz-007",
@@ -133,7 +133,7 @@
       "scenario": "_json_any_map returns {} on any malformed/empty input. INTERNAL_ROUTE_POLICY_JSON flows through it into InternalRoutePolicy, which is DEFAULT-OPEN: with an empty map every /internal route admits any authenticated caller. A single typo in the operator's route-policy JSON silently drops the entire per-route caller allow-list with no boot error, quietly widening the internal attack surface. INTERNAL_CALLER_PUBLIC_KEYS_JSON / _JWKS_JSON share the same swallow-to-empty behavior.",
       "evidence": "try:\n        val = _json.loads(raw)\n    except (ValueError, TypeError):\n        return {}",
       "recommendation": "Fail-fast at boot on malformed security-relevant JSON (route policy, caller keys) instead of returning {}; only tolerate genuinely-empty values.",
-      "status": "pending"
+      "status": "fixed"
     },
     {
       "id": "authz-011",
@@ -193,7 +193,7 @@
       "scenario": "require_internal_token resolves a CallerIdentity (named for static/jwks drivers). But authz.tenant_bootstrapped and subject.erased are recorded with actor=\"\", discarding it. An investigation into 'who bootstrapped this tenant admin' or 'who erased this subject' cannot attribute the action to a caller, weakening the audit trail exactly on privileged internal mutations.",
       "evidence": "await request.app.state.auditor.record(\n        \"authz.tenant_bootstrapped\", actor=\"\", tenant=tenant, resource=f\"tenant:{tenant}\", ...)",
       "recommendation": "Thread the resolved CallerIdentity.caller (from require_internal_token) into the audit actor for internal-tier mutations.",
-      "status": "pending"
+      "status": "fixed"
     },
     {
       "id": "authz-016",

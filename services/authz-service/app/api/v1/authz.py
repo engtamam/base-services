@@ -12,13 +12,19 @@ from app.api.auth import Principal
 from app.api.authz import require_any_capability
 from app.config import get_settings
 from app.core.authz_service import AuthzService
-from app.core.cap_policy import caps_exceeding_granter, forbidden_caps
+from app.core.cap_policy import caps_exceeding_granter, forbidden_caps, holds_cap
 from app.core.stores import AssignmentStore, PolicyStore, RoleStore
 from app.core.pii import subject_ref
 
 router = APIRouter(prefix="/api/v1", tags=["authz"])
 
 _ADMIN = require_any_capability("platform.authz", "authz.manage")
+
+
+def _is_operator(principal: Principal) -> bool:
+    """A platform operator — wildcard-aware (authz-006), so a '*' or 'platform.*' holder is classified
+    the same way the PDP classifies them, not treated as a tenant-scoped caller."""
+    return holds_cap("platform.authz", principal.caps)
 
 
 def build_authz(request: Request) -> AuthzService:
@@ -32,13 +38,13 @@ def build_authz(request: Request) -> AuthzService:
 
 
 def _op_tenant(principal: Principal, body_tenant: str | None = None) -> str:
-    if "platform.authz" in principal.caps:
+    if _is_operator(principal):
         return body_tenant or principal.tenant or "global"
     return principal.tenant or "__none__"   # authz.manage: forced to own tenant
 
 
 def _guard_tenant(principal: Principal, obj_tenant: str) -> None:
-    if "platform.authz" in principal.caps:
+    if _is_operator(principal):
         return
     if obj_tenant != (principal.tenant or "__none__"):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NOT_FOUND")
@@ -63,7 +69,7 @@ def _guard_caps(principal: Principal, caps: list[str] | None) -> None:
     """
     if caps is None:
         return
-    is_operator = "platform.authz" in principal.caps
+    is_operator = _is_operator(principal)
     s = get_settings()
     bad = forbidden_caps(
         caps, is_operator=is_operator,
@@ -91,7 +97,7 @@ async def _guard_role_caps(request, principal: Principal, tenant: str,
     same escalation one indirection away — a tenant admin could attach an existing role (e.g. one
     carrying `authz.manage` or `platform.*`) it does not itself hold. Resolve each role's caps and run
     them through the SAME subset + denylist gate. An operator (platform.authz) is unrestricted."""
-    if "platform.authz" in principal.caps or not role_refs:
+    if _is_operator(principal) or not role_refs:
         return
     svc = build_authz(request)
     roles = await svc.list_roles(tenant)
@@ -121,7 +127,7 @@ def _guard_policy(principal: Principal, *, effect: str, action: str, resource: s
     and a concrete action is run through the same capability denylist/allowlist as a role capability.
     Deny policies never escalate, so they are unrestricted.
     """
-    if "platform.authz" in principal.caps or effect != "allow":
+    if _is_operator(principal) or effect != "allow":
         return
     if "*" in (action or "") or "*" in (resource or ""):
         raise HTTPException(status.HTTP_403_FORBIDDEN,

@@ -64,6 +64,9 @@ async def require_internal_token(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED")
     if not resolve_internal_policy(settings).permits(request.url.path, identity.caller):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "FORBIDDEN")
+    # Return the resolved caller so a mutation route can attribute its audit to WHO called (authz-015).
+    # Bare `Depends(require_internal_token)` users ignore it; this is backward-compatible.
+    return identity.caller
 
 
 @router.get("/health", dependencies=[Depends(require_internal_token)])
@@ -133,8 +136,9 @@ class BootstrapIn(BaseModel):
     assign: list[str] = Field(default_factory=list)   # role NAMES (subset of roles) to grant `subject`
 
 
-@router.post("/authz/tenants/{tenant}/bootstrap", dependencies=[Depends(require_internal_token)])
-async def bootstrap_tenant(request: Request, tenant: str, body: BootstrapIn) -> dict:
+@router.post("/authz/tenants/{tenant}/bootstrap")
+async def bootstrap_tenant(request: Request, tenant: str, body: BootstrapIn,
+                           caller: str = Depends(require_internal_token)) -> dict:
     """Give a new tenant its first roles and make its owner an admin — the counterpart to
     POST /internal/tenants, run in the same provisioning saga, at the same internal trust boundary.
 
@@ -165,7 +169,7 @@ async def bootstrap_tenant(request: Request, tenant: str, body: BootstrapIn) -> 
                                 f"bootstrap may not grant platform-scoped capabilities: {', '.join(bad)}")
 
     await request.app.state.auditor.record(
-        "authz.tenant_bootstrapped", actor="", tenant=tenant, resource=f"tenant:{tenant}",
+        "authz.tenant_bootstrapped", actor=caller or "", tenant=tenant, resource=f"tenant:{tenant}",
         ip=request.client.host if request.client else "")
 
     svc = build_authz(request)
@@ -212,8 +216,9 @@ class EraseIn(BaseModel):
     subject: str
 
 
-@router.post("/privacy/erase", dependencies=[Depends(require_internal_token)])
-async def erase_subject(request: Request, body: EraseIn) -> dict:
+@router.post("/privacy/erase")
+async def erase_subject(request: Request, body: EraseIn,
+                        caller: str = Depends(require_internal_token)) -> dict:
     """Erase a data subject. Called by compliance-service during a DSAR fan-out.
 
     Returns the ack: what was erased, and what was RETAINED with its legal basis. Idempotent —
@@ -223,7 +228,7 @@ async def erase_subject(request: Request, body: EraseIn) -> dict:
     # runs BEFORE the mutation. Recording afterwards would 503 a caller whose action had
     # already succeeded, and leave it unrecorded.
     await request.app.state.auditor.record(
-        "subject.erased", actor="", tenant=body.tenant, resource=f"subject:{subject_ref(get_settings().PII_SALT, body.tenant, body.subject)}",
+        "subject.erased", actor=caller or "", tenant=body.tenant, resource=f"subject:{subject_ref(get_settings().PII_SALT, body.tenant, body.subject)}",
         ip=request.client.host if request.client else "")
     c = request.app.state.container
     s = get_settings()
@@ -297,9 +302,10 @@ async def backup_verify(request: Request, body: BackupVerifyIn,
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
 
-@router.post("/backup/import", dependencies=[Depends(require_internal_token)])
+@router.post("/backup/import")
 async def backup_import(request: Request, body: BackupImportIn,
-                        settings: Settings = Depends(get_settings)) -> dict:
+                        settings: Settings = Depends(get_settings),
+                        caller: str = Depends(require_internal_token)) -> dict:
     """Restore an archive this service produced. Idempotent; leaves newer rows alone by default."""
     _, unseal = _sealer(settings)
     # Write-ahead audit (FIN authz-004): import can OVERWRITE/PRUNE the entire authz state — roles,
@@ -307,7 +313,7 @@ async def backup_import(request: Request, body: BackupImportIn,
     # the one mutation with no trail (every role/policy/assignment write is audited). Record it before
     # the restore, like every other critical action, so a state rewrite is never silent.
     await request.app.state.auditor.record(
-        "authz.backup_imported", actor="", tenant=str(body.into_tenant or ""),
+        "authz.backup_imported", actor=caller or "", tenant=str(body.into_tenant or ""),
         resource="authz:backup",
         ip=request.client.host if request.client else "",
         metadata={"overwrite": str(body.overwrite), "prune": str(body.prune),
