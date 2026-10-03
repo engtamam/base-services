@@ -62,7 +62,8 @@
       "line": 73,
       "scenario": "denied_hosts is compared only against the URL hostname (parts.hostname). An operator who denies 'evil.example.com' is trivially bypassed by registering https://<the-ip-evil-resolves-to>/ — the hostname check never fires, and if that IP is a public unicast address the request proceeds. The deny-list therefore blocks a name but not the destination it points to.",
       "evidence": "if denied_hosts and host in denied_hosts:\n        raise SsrfBlocked(f\"host is denied: {host}\")",
-      "recommendation": "Resolve first and evaluate the deny-list against BOTH the hostname and every resolved IP, or treat a bare-IP host on the deny-list's resolved set as denied. Document that deny-by-hostname is not a security boundary on its own."
+      "recommendation": "Resolve first and evaluate the deny-list against BOTH the hostname and every resolved IP, or treat a bare-IP host on the deny-list's resolved set as denied. Document that deny-by-hostname is not a security boundary on its own.",
+      "status": "fixed"
     },
     {
       "id": "webhook-005",
@@ -106,7 +107,8 @@
       "line": 297,
       "scenario": "by_event() spans all tenants. The tenant scoping in replay_event depends entirely on the caller passing is_operator=False. The default is True. The v1 route currently passes the flag correctly, but any new caller (an internal route, a background job, a future refactor) that calls replay_event(event_id) without the kwarg re-fires EVERY tenant's deliveries for that event id — a cross-tenant IDOR enabled by a fail-open default.",
       "evidence": "async def replay_event(self, event_id: str, *, tenant: str | None = None,\n                           is_operator: bool = True) -> dict[str, Any]:",
-      "recommendation": "Default is_operator=False (fail-closed). A privileged caller must opt IN to cross-tenant replay, never inherit it by omission."
+      "recommendation": "Default is_operator=False (fail-closed). A privileged caller must opt IN to cross-tenant replay, never inherit it by omission.",
+      "status": "fixed"
     },
     {
       "id": "webhook-009",

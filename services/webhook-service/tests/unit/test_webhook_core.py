@@ -307,7 +307,7 @@ def test_replay_event_replays_every_delivery():
     for d in r["deliveries"]:
         run(w.deliver(d))
     tr.status = 200
-    out = run(w.replay_event(r["event_id"]))
+    out = run(w.replay_event(r["event_id"], is_operator=True))   # operator replays every delivery (webhook-008: default is now fail-closed)
     assert out["replayed"] == 2 and out["delivered"] == 2
 
 

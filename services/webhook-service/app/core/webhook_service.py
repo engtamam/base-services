@@ -297,10 +297,11 @@ class WebhookService:
         return await self.deliver(d.id)
 
     async def replay_event(self, event_id: str, *, tenant: str | None = None,
-                           is_operator: bool = True) -> dict[str, Any]:
+                           is_operator: bool = False) -> dict[str, Any]:
         """Replay every delivery of an event. by_event() spans ALL tenants, so a tenant-scoped caller
         must only ever replay its OWN deliveries — otherwise it re-fires another tenant's webhooks by
-        event id (an IDOR). A platform operator may replay across tenants."""
+        event id (an IDOR). A platform operator may replay across tenants. Defaults is_operator=FALSE
+        (fail-closed, webhook-008): cross-tenant replay must be opted IN, never inherited by omission."""
         deliveries = await self._deliveries.by_event(event_id, self._cfg["list_limit"])
         if not is_operator:
             deliveries = [d for d in deliveries if d.tenant == (tenant or "__none__")]

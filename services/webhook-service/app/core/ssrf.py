@@ -87,6 +87,10 @@ def validate(url: str, *, require_https: bool = True, allow_private: bool = Fals
         ip = ipaddress.ip_address(addr)
         if str(ip) in _METADATA:
             raise SsrfBlocked("cloud metadata endpoint")
+        # Evaluate the deny-list against the RESOLVED IP too (webhook-004): a hostname check alone is
+        # bypassed by giving a denied host's literal IP (or a hostname that resolves to a denied IP).
+        if denied_hosts and str(ip) in denied_hosts:
+            raise SsrfBlocked(f"resolved address is denied: {ip}")
         if not allow_private and not _ip_is_public(ip):
             # ANY non-public address disqualifies the host — a rebinding attacker only
             # needs one poisoned answer, so we refuse to pick "the good one".
