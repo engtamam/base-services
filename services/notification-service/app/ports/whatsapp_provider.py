@@ -25,11 +25,15 @@ class WhatsAppProvider(Protocol):
 
     def send(self, to: str, template_name: str, language: str, variables: list[str],
              biz_opaque_callback_data: str = "", flow_token: str = "",
-             flow_action_data: dict | None = None) -> str:
+             flow_action_data: dict | None = None, header_media_id: str = "",
+             button_payload: str = "", url_button_param: str = "") -> str:
         """Send an approved TEMPLATE. `flow_token`/`flow_action_data` are OPTIONAL: when flow_token is
         given, the template carries a Flow button (declared + approved AT TEMPLATE CREATION) and this
         supplies the per-send action — for a business-initiated Flow with no open 24h window. Omitting
-        them sends an ordinary template, unchanged. flow_action_data is omitted when empty."""
+        them sends an ordinary template, unchanged. flow_action_data is omitted when empty.
+        `header_media_id` adds an image header, `button_payload`/`url_button_param` fill a quick-reply /
+        URL button — all OPTIONAL, matching the real adapters (notification-011): the port used to omit
+        them, so a fake hooking the narrower signature passed while the adapters diverged."""
         ...
 
     def send_template_components(self, to: str, template_name: str, language: str,

@@ -12,6 +12,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from app.api.ratelimit import rate_limit
 from app.api.v1.notifications import build_notifier, build_release_control
 from app.backup_manifest import BACKUP
 from app.core import backup as _backup
@@ -378,7 +379,7 @@ class EmbeddedSignupInternalIn(BaseModel):
     root_tenant: str = Field(default="", max_length=128)
 
 
-@router.post("/whatsapp/embedded-signup", dependencies=[Depends(require_internal_token)])
+@router.post("/whatsapp/embedded-signup", dependencies=[Depends(require_internal_token), Depends(rate_limit)])
 async def internal_embedded_signup(request: Request, body: EmbeddedSignupInternalIn) -> dict:
     """The internal twin of POST /api/v1/notifications/operator/whatsapp/embedded-signup.
 
@@ -1197,7 +1198,7 @@ class WaRegisterIn(BaseModel):
     pin: str | None = Field(default=None, pattern=r"^[0-9]{6}$")
 
 
-@router.post("/whatsapp/register", dependencies=[Depends(require_internal_token)])
+@router.post("/whatsapp/register", dependencies=[Depends(require_internal_token), Depends(rate_limit)])
 async def register_whatsapp_number(request: Request, body: WaRegisterIn):
     """Register a business phone number for Cloud API sending — the PIN-carrying step Embedded Signup
     stops before. Meta refuses to SEND until a number is registered (error 133010), so an unregistered
@@ -1276,7 +1277,7 @@ class TwoStepPinIn(BaseModel):
     pin: str = Field(pattern=r"^[0-9]{6}$")
 
 
-@router.post("/whatsapp/two-step-pin", dependencies=[Depends(require_internal_token)])
+@router.post("/whatsapp/two-step-pin", dependencies=[Depends(require_internal_token), Depends(rate_limit)])
 async def set_whatsapp_two_step_pin(request: Request, body: TwoStepPinIn):
     """Set / rotate a number's 6-digit two-step-verification PIN (Meta: POST /{phone_number_id} {pin}).
 

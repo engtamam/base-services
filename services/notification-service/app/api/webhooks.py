@@ -22,6 +22,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json as _json
+import logging
+
+_log = logging.getLogger("notification.webhooks")
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from starlette.responses import PlainTextResponse
@@ -70,7 +73,11 @@ async def _tenant_of(number_index, phone_id: str) -> str:
         return ""
     try:
         return await number_index.tenant_of(phone_id) or ""
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # A LOOKUP FAILURE is not a legitimate miss (notification-018): swallowing it silently makes a
+        # number-index outage look like a flood of unmapped numbers. Surface it loudly so it is visible.
+        _log.warning("tenant_of_failed",
+                     extra={"phone_id_present": bool(phone_id), "detail": exc.__class__.__name__})
         return ""
 
 

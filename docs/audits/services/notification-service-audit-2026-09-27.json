@@ -148,7 +148,8 @@
       "line": 26,
       "scenario": "The Protocol declares send(to, template_name, language, variables, biz_opaque_callback_data, flow_token, flow_action_data) — seven params. FailoverWhatsApp, MetaWhatsApp and ConsoleWhatsApp all implement send() with three EXTRA positional params (header_media_id, button_payload, url_button_param) that the notifier passes positionally. Any new provider written to the documented port contract, or a runtime_checkable isinstance pass, is out of step; the notifier's positional call would break it.",
       "evidence": "def send(self, to: str, template_name: str, language: str, variables: list[str], biz_opaque_callback_data: str = \"\", flow_token: str = \"\", flow_action_data: dict | None = None) -> str:",
-      "recommendation": "Update the WhatsAppProvider Protocol (and send_interactive/send_template_components as needed) to the full signature the adapters and FailoverWhatsApp actually implement, so the contract and the implementations cannot drift."
+      "recommendation": "Update the WhatsAppProvider Protocol (and send_interactive/send_template_components as needed) to the full signature the adapters and FailoverWhatsApp actually implement, so the contract and the implementations cannot drift.",
+      "status": "fixed"
     },
     {
       "id": "notification-012",
@@ -214,7 +215,8 @@
       "line": 381,
       "scenario": "POST /api/v1/notifications/operator/whatsapp/embedded-signup carries Depends(rate_limit); its internal twin POST /internal/whatsapp/embedded-signup does not. A caller holding the (default single, shared) X-Internal-Token can drive unbounded code-exchange attempts against Meta — burning Meta rate budget and enabling credential-spray — with no throttle, and the audit actor is empty ('') so attribution is weaker too.",
       "evidence": "@router.post(\"/whatsapp/embedded-signup\", dependencies=[Depends(require_internal_token)])\nasync def internal_embedded_signup(request: Request, body: EmbeddedSignupInternalIn) -> dict:",
-      "recommendation": "Apply the same rate_limit dependency (and a real caller identity via INTERNAL_CALLER_DRIVER=static/jwks) to the internal onboarding, register, two-step-pin and refund routes that perform privileged Meta mutations."
+      "recommendation": "Apply the same rate_limit dependency (and a real caller identity via INTERNAL_CALLER_DRIVER=static/jwks) to the internal onboarding, register, two-step-pin and refund routes that perform privileged Meta mutations.",
+      "status": "fixed"
     },
     {
       "id": "notification-018",
@@ -225,7 +227,8 @@
       "line": 170,
       "scenario": "Both _tenant_of() and the inline number_index.tenant_of() calls catch every exception and return \"\". A datastore hiccup on the number index means every inbound message and echo during that window is recorded and fanned out with tenant=\"\" — attribution is lost with no counter, no WARN log, and no distinction from a genuine unbound number. A consumer then cannot tell whose message it is, and there is no signal that the index was down.",
       "evidence": "except Exception:  # noqa: BLE001 — a lookup miss must not stop the fan-out\n                        tenant = \"\"",
-      "recommendation": "Emit a WARN/metric when tenant_of() raises (distinct from a legitimate miss) so a number-index outage is visible rather than looking like a flood of unattributable messages."
+      "recommendation": "Emit a WARN/metric when tenant_of() raises (distinct from a legitimate miss) so a number-index outage is visible rather than looking like a flood of unattributable messages.",
+      "status": "fixed"
     },
     {
       "id": "notification-019",
