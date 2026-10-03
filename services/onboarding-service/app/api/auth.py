@@ -49,5 +49,9 @@ async def require_user(request: Request) -> Principal:
     except InvalidToken:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="INVALID_TOKEN")
     principal = _extract_principal(claims)
+    # A token with no `sub` is not a usable identity (onboarding-012): the subject is load-bearing for
+    # every per-user key and audit resource here, so an empty subject must be 401, not a blank Principal.
+    if not principal.subject:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="INVALID_TOKEN")
     request.state.principal = principal
     return principal

@@ -156,7 +156,8 @@
       "line": 31,
       "scenario": "_extract_principal sets subject=str(claims.get('sub', '')) with no rejection of an empty subject. A verified token lacking sub (or with sub=null) yields subject='' , and require_user returns it as a valid principal. provision() then runs with subject='' -> step keys hashed over tenant|''|kind, and subject-scoped grants keyed on 'subject:tenant:' . All such callers within a tenant collapse onto one identity and one set of provisioning/grant keys, so one caller's provisioning run and grant ledger entry can be read/resumed as another's.",
       "evidence": "return Principal(subject=str(claims.get(\"sub\", \"\")), caps=caps, tenant=str(tenant) if tenant else None, raw=claims)",
-      "recommendation": "Reject a token whose sub is empty with 401 (the subject is load-bearing for every key and audit resource in this service), the same way a missing tenant is handled downstream."
+      "recommendation": "Reject a token whose sub is empty with 401 (the subject is load-bearing for every key and audit resource in this service), the same way a missing tenant is handled downstream.",
+      "status": "fixed"
     },
     {
       "id": "onboarding-013",
