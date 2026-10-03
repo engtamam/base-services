@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from app.api.auth import Principal, require_user
@@ -91,9 +91,13 @@ async def provision(request: Request, body: ProvisionIn,
 
 
 @admin_router.get("", dependencies=[Depends(_PLATFORM)])
-async def list_tenants(request: Request) -> dict:
+async def list_tenants(request: Request,
+                       after: str | None = Query(default=None, max_length=256)) -> dict:
+    # tenant-007: cursor-paginated so an operator can walk EVERY tenant, not just the first page. The
+    # response carries next_cursor ("" when exhausted) — pass it back as ?after= for the next page.
     limit = get_settings().TENANT_LIST_LIMIT
-    return {"tenants": await build_service(request).list(limit)}
+    tenants, cursor = await build_service(request).list_page(limit, after)
+    return {"tenants": tenants, "next_cursor": cursor or ""}
 
 
 @admin_router.get("/{tenant_id}", dependencies=[Depends(_PLATFORM)])
@@ -102,7 +106,7 @@ async def get_tenant(request: Request, tenant_id: str) -> dict:
     return tenant.public()
 
 
-@admin_router.put("/{tenant_id}/config")
+@admin_router.put("/{tenant_id}/config", dependencies=[Depends(rate_limit)])
 async def update_config(request: Request, tenant_id: str, body: ConfigIn,
                         principal: Principal = Depends(_PLATFORM)) -> dict:
     svc, tenant = await _load(request, tenant_id)
@@ -116,7 +120,7 @@ async def update_config(request: Request, tenant_id: str, body: ConfigIn,
     return updated.public()
 
 
-@admin_router.put("/{tenant_id}/branding")
+@admin_router.put("/{tenant_id}/branding", dependencies=[Depends(rate_limit)])
 async def set_branding(request: Request, tenant_id: str, body: BrandingIn,
                        principal: Principal = Depends(_PLATFORM)) -> dict:
     svc, tenant = await _load(request, tenant_id)
@@ -130,7 +134,7 @@ async def set_branding(request: Request, tenant_id: str, body: BrandingIn,
     return updated.public()
 
 
-@admin_router.post("/{tenant_id}/suspend")
+@admin_router.post("/{tenant_id}/suspend", dependencies=[Depends(rate_limit)])
 async def suspend(request: Request, tenant_id: str,
                   principal: Principal = Depends(_PLATFORM)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
@@ -153,7 +157,7 @@ async def suspend(request: Request, tenant_id: str,
     return (await svc.suspend(tenant)).public()
 
 
-@admin_router.post("/{tenant_id}/reactivate")
+@admin_router.post("/{tenant_id}/reactivate", dependencies=[Depends(rate_limit)])
 async def reactivate(request: Request, tenant_id: str,
                      principal: Principal = Depends(_PLATFORM)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
@@ -167,7 +171,7 @@ async def reactivate(request: Request, tenant_id: str,
     return (await svc.reactivate(tenant)).public()
 
 
-@admin_router.delete("/{tenant_id}")
+@admin_router.delete("/{tenant_id}", dependencies=[Depends(rate_limit)])
 async def delete(request: Request, tenant_id: str,
                  principal: Principal = Depends(_PLATFORM)) -> dict:
     # Write-ahead: a critical action the log cannot take must not happen at all, so this
@@ -210,7 +214,7 @@ async def my_tenant(request: Request, principal: Principal = Depends(require_use
     return body
 
 
-@self_router.put("/config", dependencies=[Depends(_TENANT_ADMIN)])
+@self_router.put("/config", dependencies=[Depends(_TENANT_ADMIN), Depends(rate_limit)])
 async def my_config(request: Request, body: ConfigIn,
                     principal: Principal = Depends(require_user)) -> dict:
     svc, tenant = await _own(request, principal)
@@ -226,7 +230,7 @@ async def my_config(request: Request, body: ConfigIn,
     return updated.public()
 
 
-@self_router.put("/branding", dependencies=[Depends(_TENANT_ADMIN)])
+@self_router.put("/branding", dependencies=[Depends(_TENANT_ADMIN), Depends(rate_limit)])
 async def my_branding(request: Request, body: BrandingIn,
                       principal: Principal = Depends(require_user)) -> dict:
     svc, tenant = await _own(request, principal)

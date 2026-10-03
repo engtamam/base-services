@@ -21,17 +21,18 @@ from typing import Any
 from app.core.pii import subject_ref
 
 _TENANTS = "tenants"
-_PAGE = 500
 
 
 class TenantErasure:
     service = "tenant-service"
     category = "tenant_records"
 
-    def __init__(self, *, store, pii_salt: str, max_scan: int = 100_000) -> None:
+    # tenant-006: erase() reads ONE tenant row by id and scrubs its branding — there is no scan here, so
+    # the old ERASURE_MAX_SCAN/_PAGE/max_scan knob was advertised but never read. Removed rather than left
+    # as a lie about a bound that does not exist.
+    def __init__(self, *, store, pii_salt: str) -> None:
         self._store = store
         self._salt = pii_salt
-        self._max = max_scan
 
     async def erase(self, tenant: str, subject: str) -> dict[str, Any]:
         ref = subject_ref(self._salt, tenant, subject)

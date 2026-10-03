@@ -45,6 +45,7 @@ def create_app() -> FastAPI:
     settings.assert_audit_config_ok()
     settings.assert_pii_config_ok()
     settings.assert_cors_config_ok()
+    settings.assert_internal_caller_config_ok()   # tenant-008: fail fast on a malformed policy/caller map
     # tenant-003: the destructive/credential internal routes must not rely on the default-open policy
     # (shared token + token-fallback). In production they MUST be explicitly allow-listed to named,
     # assertion-proven callers, or any token-holder could delete tenants / import a backup over them.

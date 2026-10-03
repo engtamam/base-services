@@ -86,7 +86,8 @@
       "line": 31,
       "scenario": "erase_subject() constructs TenantErasure(..., max_scan=s.ERASURE_MAX_SCAN); the constructor stores self._max and the module defines _PAGE = 500. erase() then does a single self._store.get(_TENANTS, tenant) and never scans, so neither self._max nor _PAGE is ever read. Per the advertised-but-unread-knobs rule, a config knob whose value has no effect is worse than an absent one: an operator tuning ERASURE_MAX_SCAN believes they are bounding an erasure scan that does not exist.",
       "evidence": "self._max = max_scan   ... _PAGE = 500   (neither referenced anywhere in erase())",
-      "recommendation": "Remove ERASURE_MAX_SCAN, the max_scan parameter and _PAGE, or implement the bounded scan they imply. Do not advertise a knob nothing reads."
+      "recommendation": "Remove ERASURE_MAX_SCAN, the max_scan parameter and _PAGE, or implement the bounded scan they imply. Do not advertise a knob nothing reads.",
+      "status": "fixed"
     },
     {
       "id": "tenant-007",
@@ -97,7 +98,8 @@
       "line": 93,
       "scenario": "GET /api/v1/tenants calls build_service(request).list(limit) with TENANT_LIST_LIMIT (default 100), which is repo.list -> store.scan_all(_TENANTS, limit). Once a platform has more than 100 tenants, the operator UI shows only the first 100 (unordered — see scan_all) with no next cursor and no 'more exist' signal. Tenants beyond the limit are invisible to platform operators, and there is no way to page to them.",
       "evidence": "@admin_router.get(\"\") ... limit = get_settings().TENANT_LIST_LIMIT; return {\"tenants\": await build_service(request).list(limit)}",
-      "recommendation": "Add cursor pagination to the admin list (reuse store.find/after like iter_suspended, or a scan_all cursor) and return a next cursor / total signal so operators can see every tenant."
+      "recommendation": "Add cursor pagination to the admin list (reuse store.find/after like iter_suspended, or a scan_all cursor) and return a next cursor / total signal so operators can see every tenant.",
+      "status": "fixed"
     },
     {
       "id": "tenant-008",
@@ -108,7 +110,8 @@
       "line": 21,
       "scenario": "_json_any_map() swallows ValueError/TypeError and returns {} for INTERNAL_ROUTE_POLICY_JSON, INTERNAL_CALLER_PUBLIC_KEYS_JSON, INTERNAL_CALLER_JWKS_JSON, etc. An operator who tightens the internal tier by setting INTERNAL_ROUTE_POLICY_JSON but makes a JSON typo gets an empty policy — which InternalRoutePolicy treats as default-open (every route admits any caller). A security control silently reverts to the permissive state on a config typo, with no boot error and no log line.",
       "evidence": "except (ValueError, TypeError): return {}   # a mis-set map must not crash boot; the driver it feeds simply sees no keys",
-      "recommendation": "For security-relevant maps (route policy, caller keys), fail fast at boot on malformed JSON rather than returning {}. A policy that cannot be parsed must not silently become 'allow all'."
+      "recommendation": "For security-relevant maps (route policy, caller keys), fail fast at boot on malformed JSON rather than returning {}. A policy that cannot be parsed must not silently become 'allow all'.",
+      "status": "fixed"
     },
     {
       "id": "tenant-009",
@@ -130,7 +133,8 @@
       "line": 125,
       "scenario": "INTERNAL_CALLER_DRIVER='shared' and INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK=True by default. Combined with the default-open route policy (tenant-003), the identity half of least-privilege never runs: every internal caller is the anonymous shared-token peer (caller=\"\") and every route admits it. The machinery exists but the shipped defaults leave the whole internal tier authenticated only by one shared secret, so a single leaked token is full compromise of tenant lifecycle + backup restore.",
       "evidence": "INTERNAL_CALLER_DRIVER: str = \"shared\"   ... INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK: bool = True",
-      "recommendation": "Document a production hardening step (and ideally a boot warning in production) to move to static/jwks with fallback off; at minimum couple destructive routes to named callers so the shared token alone cannot destroy the registry."
+      "recommendation": "Document a production hardening step (and ideally a boot warning in production) to move to static/jwks with fallback off; at minimum couple destructive routes to named callers so the shared token alone cannot destroy the registry.",
+      "status": "fixed"
     },
     {
       "id": "tenant-011",
@@ -153,7 +157,8 @@
       "line": 105,
       "scenario": "Only provision (line 69) and close_my_tenant (line 237) declare Depends(rate_limit). update_config, set_branding, suspend, reactivate, delete (admin and self) have no limiter. A compromised or buggy client can hammer PUT /api/v1/tenant/config or the admin suspend/delete routes unbounded — each is a datastore CAS loop (up to 8 reads+writes per call via _apply) and an audit emit, so a flood is an amplified load and audit-sink storm with no throttle.",
       "evidence": "@self_router.put(\"/config\", dependencies=[Depends(_TENANT_ADMIN)])   # no Depends(rate_limit)",
-      "recommendation": "Add Depends(rate_limit) to all mutating routes (or a route-class policy in RATELIMIT_ROUTES covering them). Destructive admin routes especially should be throttled."
+      "recommendation": "Add Depends(rate_limit) to all mutating routes (or a route-class policy in RATELIMIT_ROUTES covering them). Destructive admin routes especially should be throttled.",
+      "status": "fixed"
     },
     {
       "id": "tenant-013",

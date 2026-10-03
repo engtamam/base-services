@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from app.adapters.resolver.resolvers import normalize_host
-from app.core.models import DELETED, SUSPENDED, Tenant, now as _now
+from app.core.models import DELETED, STATUSES, SUSPENDED, Tenant, now as _now
 from app.ports.datastore import DataStore
 
 _TENANTS = "tenants"
@@ -115,6 +115,13 @@ class TenantRepository:
         # sweeper: this IS the tenant catalogue. There is no tenant to scope it by, and it is
         # reachable only by a platform operator. Bounded by the caller's limit.
         return await self._store.scan_all(_TENANTS, limit)
+
+    async def list_page(self, limit: int = 100, after: str | None = None):
+        """tenant-007: a CURSOR-paginated page of the catalogue, so an operator can walk EVERY tenant
+        instead of silently seeing only the first TENANT_LIST_LIMIT. Filtered on the full status set
+        (find needs a non-empty where; every tenant carries one of STATUSES) and ordered by created_at."""
+        return await self._store.find(_TENANTS, {"status": list(STATUSES)}, limit=limit, after=after,
+                                      sort=("created_at", "asc"))
 
     async def iter_suspended(self, limit: int = 200, after: str | None = None):
         """A page of SUSPENDED tenants (the close-sweep's candidate set) — pushed into the store as a

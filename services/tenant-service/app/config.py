@@ -114,6 +114,50 @@ class Settings(BaseSettings):
                 "CORS_ALLOWED_ORIGINS='*' in production lets any site on the internet call this "
                 "service with a user's browser. List the origins you actually serve.")
 
+    def assert_internal_caller_config_ok(self) -> None:
+        """Boot guard (tenant-008): security-relevant JSON maps must PARSE or the service must not start.
+        _json_any_map swallows malformed JSON to {}, which for the route policy means 'no per-route
+        allow-list' (default-OPEN) and for the caller key maps means 'no per-caller identity' — a typo
+        silently widening access. Fail fast instead."""
+        # The route policy: a malformed map must never become 'allow all'.
+        raw_policy = self.INTERNAL_ROUTE_POLICY_JSON
+        if raw_policy.strip():
+            try:
+                parsed = _json.loads(raw_policy)
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"INTERNAL_ROUTE_POLICY_JSON is not valid JSON — a route policy that "
+                                 f"cannot be parsed must not silently become default-open: {exc}") from None
+            if not isinstance(parsed, dict):
+                raise ValueError("INTERNAL_ROUTE_POLICY_JSON must be a JSON object")
+        # The caller key map for the selected non-shared driver.
+        if self.INTERNAL_CALLER_DRIVER in ("static", "jwks"):
+            raw = (self.INTERNAL_CALLER_PUBLIC_KEYS_JSON if self.INTERNAL_CALLER_DRIVER == "static"
+                   else self.INTERNAL_CALLER_JWKS_JSON)
+            field = ("INTERNAL_CALLER_PUBLIC_KEYS_JSON" if self.INTERNAL_CALLER_DRIVER == "static"
+                     else "INTERNAL_CALLER_JWKS_JSON")
+            try:
+                parsed = _json.loads(raw) if raw.strip() else None
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"{field} is not valid JSON for INTERNAL_CALLER_DRIVER="
+                                 f"{self.INTERNAL_CALLER_DRIVER!r}: {exc}") from None
+            if not isinstance(parsed, dict) or not parsed:
+                raise ValueError(f"{field} must be a non-empty JSON object for INTERNAL_CALLER_DRIVER="
+                                 f"{self.INTERNAL_CALLER_DRIVER!r} — a malformed/empty map silently "
+                                 "disables per-caller identity.")
+        # tenant-010: per-caller identity is OFF by default (shared driver + token fallback), so
+        # caller-level authz is not actually enforced. That is a safe default for a greenfield deploy, but
+        # in production it means the shared internal token alone can reach destructive routes. Warn loudly
+        # so an operator makes the deliberate choice to move to static/jwks with the fallback off.
+        if self.is_production and (self.INTERNAL_CALLER_DRIVER == "shared"
+                                   or self.INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK):
+            import logging
+            logging.getLogger("app.tenant").warning(
+                "internal caller identity is not fully enforced in production "
+                "(driver=%s, token_fallback=%s) — the shared internal token alone can reach destructive "
+                "routes. Harden with INTERNAL_CALLER_DRIVER=static|jwks and "
+                "INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK=false.",
+                self.INTERNAL_CALLER_DRIVER, self.INTERNAL_CALLER_ALLOW_TOKEN_FALLBACK)
+
     # ── Internal service-to-service auth (REQUIRED) ─────────────────────────
     # Shared token for /internal/* endpoints. Must be strong (>= 32 chars).
     INTERNAL_SERVICE_TOKEN: str = Field(min_length=32)
@@ -144,7 +188,6 @@ class Settings(BaseSettings):
     INTERNAL_ASSERTION_TTL_SECONDS: int = 60
     # Salts the subject pseudonym on an erasure ack. FROZEN — config/product.identifiers.lock.json.
     PII_SALT: str = ""
-    ERASURE_MAX_SCAN: int = 100_000
 
     # ── Backup (backup-service orchestrates; this service produces sealed archives) ──────────
     # Seals backup archives at rest. SEPARATE from any live-secrets key by design: restoring must

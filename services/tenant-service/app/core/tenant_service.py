@@ -167,6 +167,11 @@ class TenantService:
     async def list(self, limit: int = 100) -> list[dict]:
         return await self._repo.list(limit)
 
+    async def list_page(self, limit: int = 100, after: str | None = None):
+        """tenant-007: a cursor-paginated catalogue page. Returns (tenants, next_cursor)."""
+        rows, cursor = await self._repo.list_page(limit, after)
+        return rows, cursor
+
     # ── config / branding ─────────────────────────────────────────────────────
     @staticmethod
     def _require_active(tenant: Tenant) -> None:
