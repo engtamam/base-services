@@ -99,6 +99,17 @@ MINTABLE: dict[str, dict] = {
     # MESSAGE_KEY, which encrypts stored conversation content. REUSED across re-runs like the RS256
     # keypairs: re-minting would make every already-sealed conversation undecryptable.
     "MESSAGE_KEY": {"t": "svc_secret"},
+    # The v0.25.36–51 audit remediation added per-service boot guards that REQUIRE a dedicated,
+    # non-fallback secret/salt in production (each refuses to boot otherwise → CrashLoopBackOff on a
+    # fresh cluster). Every one is svc_secret-class — unique per service, reused across re-runs (never
+    # re-minted, or already-sealed data / outstanding signed URLs break), and each is declared by exactly
+    # ONE service so it is minted only there:
+    "CREDENTIAL_SEAL_KEY": {"t": "svc_secret"},     # connector-service — seals OAuth creds at rest (connector-013)
+    "OTP_SALT": {"t": "svc_secret"},                # identity-service — OTP digest salt, must differ from PII_SALT (identity-010)
+    "ROLLOUT_SALT": {"t": "svc_secret"},            # feature-flag-service — rollout-bucket HMAC salt (feature-flag-011)
+    "SEAL_KEY": {"t": "svc_secret"},                # stream-service — seals source credentials at rest (stream)
+    "PLAYBACK_SIGNING_SECRET": {"t": "svc_secret"}, # stream-service — hmac playback-URL signer (stream-007)
+    "SIGNED_URL_SECRET": {"t": "svc_secret"},       # file-service — hmac signed-download signer (file-r2-08)
 }
 
 # The per-service (unshared, reused-across-runs) secret keys — used both to preserve them on re-run
