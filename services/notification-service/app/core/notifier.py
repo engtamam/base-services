@@ -102,7 +102,7 @@ class NotificationService:
                      header_media_id: str | None = None,
                      button_payload: str | None = None,
                      url_button_param: str | None = None,
-                     deep_link: str | None = None) -> dict:
+                     deep_link: str | None = None, kind: str | None = None) -> dict:
         # Dedupe FIRST: a retried call with the same key must not re-send (duplicate OTP
         # SMS costs money; duplicate emails erode trust). Returns the original result.
         dup = await self._dedupe_reserve(idempotency_key, tenant or "")
@@ -200,7 +200,7 @@ class NotificationService:
 
         # 4) send via the channel (deep_link is carried only by the in-app item; other channels ignore it)
         ok, provider, error = await self._deliver(channel, recipient, subject, body, user_id,
-                                                  deep_link=deep_link or "")
+                                                  deep_link=deep_link or "", kind=kind or "info")
 
         # 5) record — and if it failed, decide whether it is DEAD or merely DELAYED.
         if ok:
@@ -432,7 +432,8 @@ class NotificationService:
             await self._release.after_send(wa=wa, recipient=recipient, tenant=tenant or "")
 
     async def _deliver(self, channel: str, recipient: str, subject: str, body: str,
-                       user_id: str | None, deep_link: str = "") -> tuple[bool, str, str]:
+                       user_id: str | None, deep_link: str = "",
+                       kind: str = "info") -> tuple[bool, str, str]:
         """Hand the message to the provider.
 
         The provider clients are BLOCKING (`send()` is a plain def doing network I/O). Awaiting
@@ -449,7 +450,8 @@ class NotificationService:
                 ok, provider = await asyncio.to_thread(self._sms.send, recipient, body)
             elif channel == "inapp":   # our own store, not a third party
                 await self._inapp.add(InAppItem(id=new_id(), user=user_id or recipient,
-                                                title=subject, body=body, deep_link=deep_link or ""))
+                                                title=subject, body=body, deep_link=deep_link or "",
+                                                kind=kind or "info"))
                 ok, provider = True, "inapp"
             else:
                 # notification-015: anything else (a WhatsApp send must go through _deliver_whatsapp, and

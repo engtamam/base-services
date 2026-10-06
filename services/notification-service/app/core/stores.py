@@ -692,6 +692,7 @@ class InAppStore:
         # console/mobile bell always reads the same fields (backward-compat; an old item simply has no target).
         for r in page:
             r.setdefault("deep_link", "")
+            r.setdefault("kind", "info")        # legacy items predate `kind` → read as info
         return page
 
     async def mark_read(self, user: str, item_id: str) -> bool:

@@ -143,8 +143,13 @@ class InAppItem:
     # It is a RELATIVE path by contract (validated at the API edge), never an absolute/external URL, so a
     # trusted notification can never deep-link a tenant to an attacker-controlled site.
     deep_link: str = ""
+    # Whether the notification asks the user to DECIDE ("action" — e.g. a join/subscription request to
+    # accept or reject) or is purely informational ("info" — e.g. a new hourly booking). Lets the bell
+    # style/triage the two differently. Default "info" for backward-compat: any old item, or any send
+    # that did not set it, reads as info and the bell behaves exactly as before.
+    kind: str = "info"
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "user": self.user, "title": self.title,
                 "body": self.body, "read": self.read, "ts": self.ts,
-                "deep_link": self.deep_link}
+                "deep_link": self.deep_link, "kind": self.kind}

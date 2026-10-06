@@ -81,6 +81,11 @@ class NotifyIn(BaseModel):
     # whitespace — so a trusted in-app notification can never deep-link a tenant to an external
     # (attacker-controlled) URL. Ignored by non-inapp channels. Absent = no target (mark-as-read only).
     deep_link: str | None = Field(default=None, max_length=512, pattern=r"^/[^/\s][^\s]*$")
+    # IN-APP only: whether this notification needs a user DECISION ("action", e.g. accept/reject a
+    # join/subscription request) or is informational ("info", e.g. a new hourly booking) — lets the bell
+    # triage the two. Only "action"/"info" are accepted; absent = "info" (backward-compat, the bell
+    # behaves exactly as before). Ignored by non-inapp channels.
+    kind: str | None = Field(default=None, pattern=r"^(action|info)$")
 
 _HEADER = "X-Internal-Token"
 _ASSERTION_HEADER = "X-Internal-Assertion"
@@ -179,7 +184,7 @@ async def internal_notify(request: Request, body: NotifyIn) -> dict:
         biz_opaque_callback_data=body.biz_opaque_callback_data, whatsapp_override=whatsapp_override,
         flow_token=body.flow_token, flow_action_data=body.flow_action_data,
         header_media_id=body.header_media_id, button_payload=body.button_payload,
-        url_button_param=body.url_button_param, deep_link=body.deep_link,
+        url_button_param=body.url_button_param, deep_link=body.deep_link, kind=body.kind,
     )
 
 

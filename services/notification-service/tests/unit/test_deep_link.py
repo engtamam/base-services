@@ -90,3 +90,45 @@ def test_notifyin_accepts_relative_deep_links(ok):
     from app.api.internal import NotifyIn
     assert NotifyIn(recipient="u1", channel="inapp", template_key="order_new",
                     deep_link=ok).deep_link == ok
+
+
+# ── kind: action vs info (coworking wiring) ───────────────────────────────────
+def test_inapp_kind_defaults_to_info():
+    svc, store = _notifier()
+    run(svc.notify(recipient="u1", channel="inapp", template_key="order_new",
+                   user_id="u1", variables={"n": "1"}))
+    assert run(InAppStore(store).feed("u1"))[0]["kind"] == "info"
+
+
+@pytest.mark.parametrize("k", ["action", "info"])
+def test_inapp_kind_is_carried_to_the_feed(k):
+    svc, store = _notifier()
+    run(svc.notify(recipient="u1", channel="inapp", template_key="order_new",
+                   user_id="u1", variables={"n": "1"}, kind=k))
+    assert run(InAppStore(store).feed("u1"))[0]["kind"] == k
+
+
+def test_legacy_item_missing_kind_is_normalised_to_info():
+    store = MemoryDataStore()
+    run(store.put(_INAPP, "old1", {"id": "old1", "user": "u1", "title": "t", "body": "b",
+                                   "read": False, "ts": "2020-01-01T00:00:00Z"}))
+    assert run(InAppStore(store).feed("u1"))[0]["kind"] == "info"
+
+
+def test_model_to_dict_includes_kind():
+    assert InAppItem(id="i", user="u", title="t", body="b", kind="action").to_dict()["kind"] == "action"
+    assert InAppItem(id="i", user="u", title="t", body="b").to_dict()["kind"] == "info"
+
+
+@pytest.mark.parametrize("bad", ["ACTION", "decision", "", "warn", "action "])
+def test_notifyin_rejects_invalid_kind(bad):
+    from pydantic import ValidationError
+    from app.api.internal import NotifyIn
+    with pytest.raises(ValidationError):
+        NotifyIn(recipient="u1", channel="inapp", template_key="order_new", kind=bad)
+
+
+@pytest.mark.parametrize("ok", ["action", "info"])
+def test_notifyin_accepts_valid_kind(ok):
+    from app.api.internal import NotifyIn
+    assert NotifyIn(recipient="u1", channel="inapp", template_key="order_new", kind=ok).kind == ok

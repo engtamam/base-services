@@ -671,6 +671,18 @@
             ],
             "title": "Idempotency Key"
           },
+          "kind": {
+            "anyOf": [
+              {
+                "pattern": "^(action|info)$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
           "locale": {
             "anyOf": [
               {
