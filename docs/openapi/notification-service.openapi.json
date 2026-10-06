@@ -599,6 +599,19 @@
             "title": "Channel",
             "type": "string"
           },
+          "deep_link": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "pattern": "^/[^/\\s][^\\s]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deep Link"
+          },
           "event": {
             "anyOf": [
               {

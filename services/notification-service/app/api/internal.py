@@ -75,6 +75,12 @@ class NotifyIn(BaseModel):
     # an UNKNOWN identity is REFUSED (a message from another branch's number is worse than none sent),
     # never quietly resolved to the tenant default. Absent = the tenant's default number.
     sending_identity: str | None = Field(default=None, max_length=128)
+    # IN-APP only: an optional internal deep link the notification bell navigates to on tap (e.g.
+    # "/whatsapp-orders/102"), so a "new order" notification opens that order instead of the home screen.
+    # Constrained to a RELATIVE in-app path — must start with a single "/" and carry no scheme/host/
+    # whitespace — so a trusted in-app notification can never deep-link a tenant to an external
+    # (attacker-controlled) URL. Ignored by non-inapp channels. Absent = no target (mark-as-read only).
+    deep_link: str | None = Field(default=None, max_length=512, pattern=r"^/[^/\s][^\s]*$")
 
 _HEADER = "X-Internal-Token"
 _ASSERTION_HEADER = "X-Internal-Assertion"
@@ -173,7 +179,7 @@ async def internal_notify(request: Request, body: NotifyIn) -> dict:
         biz_opaque_callback_data=body.biz_opaque_callback_data, whatsapp_override=whatsapp_override,
         flow_token=body.flow_token, flow_action_data=body.flow_action_data,
         header_media_id=body.header_media_id, button_payload=body.button_payload,
-        url_button_param=body.url_button_param,
+        url_button_param=body.url_button_param, deep_link=body.deep_link,
     )
 
 

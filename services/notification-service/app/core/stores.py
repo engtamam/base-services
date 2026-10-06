@@ -687,7 +687,12 @@ class InAppStore:
         # stable two-pass: newest first, then unread first (ISO timestamps sort lexically)
         rows.sort(key=lambda r: r.get("ts", ""), reverse=True)
         rows.sort(key=lambda r: bool(r.get("read", False)))
-        return rows[:limit]
+        page = rows[:limit]
+        # Stable shape: items written before deep_link existed have no such key — normalise to "" so the
+        # console/mobile bell always reads the same fields (backward-compat; an old item simply has no target).
+        for r in page:
+            r.setdefault("deep_link", "")
+        return page
 
     async def mark_read(self, user: str, item_id: str) -> bool:
         row = await self._store.get(_INAPP, item_id)

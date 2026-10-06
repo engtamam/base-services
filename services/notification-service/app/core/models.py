@@ -137,7 +137,14 @@ class InAppItem:
     body: str
     read: bool = False
     ts: str = field(default_factory=now)
+    # An OPTIONAL internal deep link — a relative in-app path the console/mobile bell navigates to when
+    # the item is tapped (e.g. "/whatsapp-orders/102"), so a "new order" notification opens that order
+    # instead of the home screen. Empty = no target (today's behaviour; the bell only marks-as-read).
+    # It is a RELATIVE path by contract (validated at the API edge), never an absolute/external URL, so a
+    # trusted notification can never deep-link a tenant to an attacker-controlled site.
+    deep_link: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "user": self.user, "title": self.title,
-                "body": self.body, "read": self.read, "ts": self.ts}
+                "body": self.body, "read": self.read, "ts": self.ts,
+                "deep_link": self.deep_link}
