@@ -1,61 +1,33 @@
 # Moyasar — Marketplace / Split API Reference
 
-> Reference for the `moyasar` marketplace adapter in `payments-service` (Phase 2).
-> Source: docs.moyasar.com, captured 2026-10-07. **Re-verify every shape at build** — items marked
-> **CONFIRM** were not fully exposed in the captured excerpts.
+> Adapter: `services/payments-service/app/adapters/payment/moyasar.py`. **Every row cites an explicit
+> first-party source + capture date. No detail is assumed** — anything not confirmed is labelled
+> **UNVERIFIED** and must be confirmed against the live docs / a sandbox account before the marketplace
+> model is used in production. Latest API as of capture: **v1**. Captured **2026-10-07**.
 
-Moyasar Financial is a **SAMA-licensed Payment Institution** (licence to 2030-01-13).
+Moyasar Financial is a SAMA-licensed Payment Institution.
 
-## Auth / base
-- Base `https://api.moyasar.com/v1`. **HTTP Basic** auth with the platform secret key as the username
-  (empty password) — our `MARKETPLACE_SECRET_KEY`. **CONFIRM** exact scheme.
+| Item | Value | Status | Source (captured 2026-10-07) |
+|---|---|---|---|
+| Base/version | `https://api.moyasar.com/v1` | ✅ Verified | docs.moyasar.com/api/api-introduction |
+| Auth | HTTP Basic, API key = username, empty password | ✅ Verified | docs.moyasar.com/api/authentication |
+| Amount unit | minor (halalas): 1.00 SAR = 100 | ✅ Verified | docs.moyasar.com/api/payments/01-create-payment ; /api/invoices/01-create-invoice |
+| Create invoice (hosted) | `POST /v1/invoices` → response `url` is the hosted checkout page | ✅ Verified | docs.moyasar.com/api/invoices/01-create-invoice |
+| Invoice redirect fields | `success_url` (redirect when paid), `back_url` (back button), `callback_url` (server notification, not a redirect) | ✅ Verified | docs.moyasar.com/api/invoices/01-create-invoice |
+| Split | `splits[] = {amount(minor), recipient_id(uuid), recipient_type: Entity\|Platform\|Beneficiary, reference, description, fee_source, refundable}` | ✅ Verified (on `/payments`) | docs.moyasar.com/api/payments/01-create-payment |
+| Split on **invoices** (hosted) | `splits` returned only for entities created after 2025-10; **request-side splits need account enablement (contact Moyasar support)** | ⚠️ **Gated / confirm per account** | docs.moyasar.com/api/invoices/01-create-invoice ("contact support team") |
+| Fetch invoice | `GET /v1/invoices/{id}` → `status` | ✅ Verified | docs.moyasar.com/api/invoices/04-show-invoice |
+| Payment statuses | initiated, paid, authorized, captured, verified, failed, refunded, voided, expired (paid = success) | ✅ Verified | docs.moyasar.com/api/payments/01-create-payment ; /api/other/webhooks/available-webhooks |
+| Webhook verification | `X-Moyasar-Signature` = HMAC-SHA256 of the RAW body (hex) keyed with our secret, OR body `secret_token` = our secret | ✅ Verified | docs.moyasar.com/api/other/webhooks/webhook-reference ; help.moyasar.com/.../moyasar-dashboard-webhooks |
+| Payout object/status | `GET /v1/payouts/{id}`; statuses: queued, initiated, paid, failed, canceled, returned | ✅ Verified | docs.moyasar.com/guides/payouts/payout-details ; /api/payouts/04-create-payout |
+| Onboarding — recipient (Entity) `POST /v1/entities` | `recipient_id` must be a valid Entity/Platform/Beneficiary UUID | ⚠️ **UNVERIFIED** (that `recipient_id` is such a UUID is confirmed; the `POST /v1/entities` creation endpoint is NOT confirmed — may be dashboard/another API) | docs.moyasar.com/api/payments/01-create-payment (recipient_id) ; entity-creation endpoint TBC |
+| Hosted onboarding (mode B) | — | ⚠️ **UNVERIFIED** (declare `onboarding={api}` only until confirmed) | — |
 
-## Amounts
-- **Minor units** (halalas): 1.00 SAR = 100. So NO major-unit conversion (unlike Tap) — pass our
-  `amount_minor` straight through.
+**Trust anchor:** `verify_webhook` compares whichever credential is present (HMAC header or body
+secret_token), timing-safe, then re-fetches the payment/invoice and trusts the fetched status — so a
+forged/replayed body settles nothing. Idempotent apply.
 
-## Split payment
-Create Payment (`POST /payments`) — and/or a hosted Invoice (`POST /invoices`, **CONFIRM** which carries
-splits for a hosted flow) — takes a `splits` array:
-```json
-"splits": [
-  { "amount": 9000, "recipient_id": "<uuid>", "recipient_type": "Entity",
-    "reference": "...", "fee_source": false, "refundable": true }
-]
-```
-- `recipient_type` ∈ `Entity | Platform | Beneficiary`; `recipient_id` is the sub-merchant's id.
-- `amount` is minor units; the platform's share is the remainder (same model as Tap).
-
-## Statuses
-Webhook events: `payment_paid`, `payment_failed`, `payment_refunded`, `payment_voided`,
-`payment_authorized`, `payment_captured`, `payment_verified`. **`paid` is the success**.
-
-## Payout
-`POST /payouts` (payout account id as source; destination type/IBAN/name). `GET /payouts/{id}` for status.
-**CONFIRM** payout status enum.
-
-## Webhook verification (CONFIRMED 2026-10-07)
-- Two authentication paths, either is accepted:
-  * **`X-Moyasar-Signature`** header = **HMAC-SHA256 of the RAW body** keyed with our secret (hex), OR
-  * a **`secret_token`** field in the body that **equals** our secret.
-- Whichever is present is compared timing-safe against `MARKETPLACE_WEBHOOK_SECRET`; a present-but-wrong one
-  is refused WITHOUT a fetch. Trust anchor = re-fetch the payment (verify-by-fetch), same as Tap/TuwaiqPay.
-  Idempotent apply. Implemented in `adapters/payment/moyasar.py`; covered by tests.
-
-## Adapter mapping (`moyasar` adapter)
-- Declares `model=marketplace, capabilities={checkout, onboarding, split, payout}, onboarding={api}`
-  (hosted/mode-B for Moyasar is **CONFIRM** — declare `{api}` until confirmed).
-- `prepare_split_checkout` → create hosted invoice/payment with `splits` (minor amounts).
-- `verify_webhook` → secret_token timing-safe compare + verify-by-fetch.
-- `fetch_status` → GET payment/invoice; paid → succeeded.
-- `onboard_merchant` (api) → create entity/beneficiary → recipient id. `fetch_payout_status` → GET payout.
-- Credentials: the platform MARKETPLACE_* store (Basic-auth secret key).
-
-## Version (CONFIRMED 2026-10-07)
-- API `https://api.moyasar.com/v1` is current; HTTP Basic auth (API key = username, empty password). Our
-  adapter uses this.
-
-## CONFIRM at build
-1. Basic-auth exact form (confirmed above); hosted-checkout endpoint for splits (payments vs invoices) + the returned url field.
-2. ~~Webhook secret_token transport~~ — CONFIRMED above (X-Moyasar-Signature HMAC OR body secret_token).
-3. Payout status enum; onboarding/recipient-creation endpoints; whether hosted onboarding exists.
+## Still to confirm before GA (no assumptions shipped as fact)
+1. Request-side `splits` on `/invoices` (hosted) vs `/payments` (tokenized source) — enablement with Moyasar.
+2. Entity/recipient CREATION endpoint (adapter currently posts `/v1/entities` — UNVERIFIED).
+3. Whether a hosted (mode B) onboarding exists.

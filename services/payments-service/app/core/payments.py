@@ -56,6 +56,9 @@ def _peek_provider_ref(body: bytes) -> str:
     for key in ("provider_ref", "transactionId", "id"):   # console / generic / tap (top-level `id`)
         if payload.get(key):
             return str(payload[key])
+    data = payload.get("data")                            # moyasar nests the payment under `data`
+    if isinstance(data, dict) and data.get("id"):
+        return str(data["id"])
     return ""
 
 

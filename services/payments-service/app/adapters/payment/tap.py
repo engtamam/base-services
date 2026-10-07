@@ -1,10 +1,10 @@
 """Tap Payments (MENA) marketplace adapter — split checkout + sub-merchant onboarding + payout status.
 
-Verified against developers.tap.company, captured 2026-10-07 (docs/integrations/tap-marketplace-api-
-reference.md). Several shapes there are marked CONFIRM-at-build and are implemented against the documented
-structure with the base/endpoints configurable; the TRUST ANCHOR for a webhook is a verify-by-fetch
-(Retrieve a Charge), exactly like the TuwaiqPay adapter, so a forged/replayed body can never settle a
-payment our own authenticated GET does not confirm.
+Every API detail here is cited, with Verified/UNVERIFIED status and a capture date, in the authoritative
+reference docs/integrations/tap-marketplace-api-reference.md (captured 2026-10-07). Nothing is assumed:
+the two spots still UNVERIFIED there (single-payout GET path; Create-Destination request) are marked
+inline below. The TRUST ANCHOR for a webhook is verify-by-fetch (Retrieve a Charge), so a forged/replayed
+body can never settle a payment our own authenticated GET does not confirm, even if a detail drifts.
 
 Marketplace model: the PLATFORM's single secret key (Bearer) authorises a charge that SPLITS across
 sub-merchant `destinations`; the platform's commission is the implicit remainder. Credentials come from
@@ -77,10 +77,12 @@ class TapGateway:
         name = str(meta.get("customerName") or meta.get("customer_name") or "")
         email = str(meta.get("customerEmail") or meta.get("customer_email") or "")
         phone = str(meta.get("customerMobilePhone") or meta.get("customer_mobile") or "")
-        if not (name and (email or phone)):
+        # Tap's Create Charge requires customer.first_name AND customer.email (phone optional) — confirmed
+        # against the live reference 2026-10-07. Refuse up front rather than let Tap 400 the charge.
+        if not (name and email):
             return CheckoutSession(
                 ok=False, provider=self.driver,
-                error="Tap requires customerName + (customerEmail or customerMobilePhone) in metadata")
+                error="Tap requires customerName + customerEmail in metadata")
         cur = (currency or "SAR").upper()
         dest = [{"id": d.destination_id, "amount": float(to_major(int(d.amount_minor), cur)),
                  "currency": cur} for d in destinations]
@@ -212,6 +214,9 @@ class TapGateway:
 
     # ── payout ───────────────────────────────────────────────────────────────────
     def fetch_payout_status(self, *, payout_ref: str) -> PayoutStatus:
+        # UNVERIFIED (see docs/integrations/tap-marketplace-api-reference.md): list/download payout
+        # endpoints are confirmed; the single-payout GET /v2/payouts/{id} path is not confirmed in Tap's
+        # docs — confirm against the live /reference/payout + a sandbox account before GA.
         if not _ID_RE.match(payout_ref or ""):
             raise GatewayUnavailable("Tap: malformed payout id")
         ref = quote(payout_ref, safe="")

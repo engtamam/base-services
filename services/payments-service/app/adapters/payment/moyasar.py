@@ -1,9 +1,10 @@
 """Moyasar (KSA) marketplace adapter — the SECOND marketplace provider, proving provider-neutrality.
 
-Implements the SAME MarketplaceGateway Protocol as the Tap adapter, against Moyasar's shapes (docs.
-moyasar.com, captured 2026-10-07; docs/integrations/moyasar-marketplace-api-reference.md). Items marked
-CONFIRM there are built to the documented structure with the base configurable; the TRUST ANCHOR for a
-webhook is verify-by-fetch, like every other adapter here.
+Implements the SAME MarketplaceGateway Protocol as the Tap adapter, against Moyasar's shapes. Every API
+detail here is cited, with Verified/UNVERIFIED status + capture date (2026-10-07), in the authoritative
+reference docs/integrations/moyasar-marketplace-api-reference.md. Nothing is assumed; the spots still
+UNVERIFIED there (entity-creation endpoint; request-side splits on /invoices need account enablement) are
+marked inline below. The TRUST ANCHOR for a webhook is verify-by-fetch, like every other adapter here.
 
 Differences from Tap, handled here so the core sees one contract:
   * Basic auth with the platform secret key (not Bearer).
@@ -72,7 +73,9 @@ class MoyasarGateway:
                                destinations: list[SplitDestination], return_url: str = "",
                                metadata: dict | None = None) -> CheckoutSession:
         cur = (currency or "SAR").upper()
-        # Moyasar amounts are MINOR units — pass straight through, no conversion.
+        # Moyasar amounts are MINOR units — pass straight through, no conversion (ref: create-invoice).
+        # NOTE (ref doc): request-side `splits` on /invoices need account enablement (contact Moyasar);
+        # the field shape itself is confirmed on /payments. Posted here for an enabled marketplace account.
         splits = [{"amount": int(d.amount_minor), "recipient_id": d.destination_id,
                    "recipient_type": "Entity"} for d in destinations]
         payload = {
@@ -149,6 +152,9 @@ class MoyasarGateway:
         if mode != ONBOARD_API:
             return OnboardResult(ok=False, provider=self.driver,
                                  error=f"unsupported onboarding mode {mode!r}")
+        # UNVERIFIED (see docs/integrations/moyasar-marketplace-api-reference.md): recipient_id must be a
+        # valid Entity UUID (confirmed), but the entity-CREATION endpoint is not confirmed in Moyasar's
+        # docs — POST /v1/entities is a placeholder to confirm with Moyasar before GA.
         try:
             code, resp = post_json(f"{self._base}/entities", dict(data), self._headers(),
                                    timeout=self._timeout)
