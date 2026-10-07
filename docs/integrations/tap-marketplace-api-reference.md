@@ -60,16 +60,15 @@ Add a `destinations` object to the Create Charge request:
 `PENDING, INITIATED, FAILED, PAID_OUT`. Payouts API lists settlements Tap deposits to the business bank
 account, with a download endpoint for reconciliation.
 
-## Webhook verification
-- Tap signs webhooks with a **hashstring (HMAC-SHA256)**. Captured excerpts did **not** fully specify the
-  signed-field order / header name / amount formatting. Community/older docs describe an ordered concat of
-  `x_id, x_amount, x_currency, x_gateway_reference, x_payment_reference, x_status, x_created` with the
-  amount formatted to the currency's decimals. **CONFIRM the exact scheme + header name with Tap.**
+## Webhook verification (CONFIRMED 2026-10-07)
+- Tap signs webhooks with a **hashstring = HMAC-SHA256 keyed with the SECRET KEY** (not a separate webhook
+  secret), sent in the **`hashstring`** header, over the ordered `x_`-labelled concat:
+  `x_id{id}x_amount{amount}x_currency{currency}x_gateway_reference{..}x_payment_reference{..}x_status{status}x_created{created}`,
+  with the **amount formatted to the currency's decimals** (3 for KWD/BHD/OMR/JOD/IQD/TND, else 2).
 - **Trust anchor = re-fetch the charge (Retrieve a Charge) before mutating** — metadata/customer are not
-  signed and the posted body must not be trusted for attribution. This is the same verify-by-fetch
-  discipline our TuwaiqPay adapter uses, so the adapter's `verify_webhook` does: compute+compare the
-  hashstring when the scheme is confirmed AND/OR re-fetch the charge and treat the fetched status as truth.
-  Webhooks can fire twice → application must be idempotent.
+  signed. `verify_webhook` compares the `hashstring` (timing-safe, keyed by the secret key) when present
+  AND re-fetches the charge, treating the fetched status as truth. Webhooks can fire twice → idempotent.
+- Implemented in `adapters/payment/tap.py` (`_hashstring` keys with `self._secret`). Covered by tests.
 
 ## Adapter mapping (payments-service `tap` adapter, Phase 1)
 - Declares `model=marketplace, capabilities={checkout, onboarding, split, payout}, onboarding={api, hosted}`.
@@ -79,8 +78,11 @@ account, with a download endpoint for reconciliation.
 - `verify_webhook(...)` → hashstring compare (when confirmed) + verify-by-fetch (Retrieve a Charge).
 - Credentials: the PLATFORM's marketplace secret key (platform-scoped store, NOT per-tenant MERCHANT_*).
 
+## Version (CONFIRMED 2026-10-07)
+- API `https://api.tap.company/v2` is current (no v3); Bearer auth with the secret key. Our adapter uses this.
+
 ## Gaps to CONFIRM at build
-1. Exact webhook hashstring field order + header name + amount formatting.
+1. ~~Webhook hashstring field order + header name + amount formatting~~ — CONFIRMED above.
 2. Exact Create Charge full body (customer, source, redirect/post URLs) for KSA.
 3. JS Connect embed contract + the onboarding-status callback shape (source of `merchant.onboarding_updated`).
 4. Destination creation prerequisites (business/brand/branch ids) and whether a simpler "lead" path exists.

@@ -16,6 +16,7 @@ from __future__ import annotations
 import hmac
 import json
 import re
+from hashlib import sha256
 from urllib.parse import quote
 
 from app.adapters.payment_http import basic_auth, get_json, post_json
@@ -113,8 +114,11 @@ class MoyasarGateway:
 
     def verify_webhook(self, *, headers: dict[str, str], body: bytes,
                        stored_currency: str = "") -> PaymentOutcome:
-        """secret_token timing-safe compare (when configured) + verify-by-fetch as the trust anchor. A
-        present-but-wrong token is refused WITHOUT a fetch; GatewayUnavailable propagates for retry."""
+        """Verified 2026-10-07: Moyasar authenticates a webhook either way —
+          * `X-Moyasar-Signature` header = HMAC-SHA256 of the RAW body keyed with our secret (hex), OR
+          * a `secret_token` field in the body that EQUALS our secret.
+        Whichever is present is compared timing-safe; a present-but-wrong one is refused WITHOUT a fetch.
+        The trust anchor is still the verify-by-fetch (re-query the payment). GatewayUnavailable propagates."""
         try:
             data = json.loads(body.decode("utf-8", "replace")) if body else {}
         except Exception:   # noqa: BLE001
@@ -122,9 +126,15 @@ class MoyasarGateway:
         if not isinstance(data, dict):
             return PaymentOutcome(status=PENDING, provider=self.driver, verified=False)
         if self._webhook_secret:
-            token = headers.get("x-moyasar-signature") or str(data.get("secret_token", ""))
-            if not hmac.compare_digest(token, self._webhook_secret):
-                return PaymentOutcome(status=PENDING, provider=self.driver, verified=False)
+            sig = headers.get("x-moyasar-signature")
+            if sig:
+                expected = hmac.new(self._webhook_secret.encode(), body or b"", sha256).hexdigest()
+                if not hmac.compare_digest(sig, expected):
+                    return PaymentOutcome(status=PENDING, provider=self.driver, verified=False)
+            else:
+                token = str(data.get("secret_token", ""))
+                if not hmac.compare_digest(token, self._webhook_secret):
+                    return PaymentOutcome(status=PENDING, provider=self.driver, verified=False)
         inner = data.get("data") if isinstance(data.get("data"), dict) else data
         pay_id = str(inner.get("id", ""))
         if not pay_id:

@@ -34,11 +34,13 @@ Webhook events: `payment_paid`, `payment_failed`, `payment_refunded`, `payment_v
 `POST /payouts` (payout account id as source; destination type/IBAN/name). `GET /payouts/{id}` for status.
 **CONFIRM** payout status enum.
 
-## Webhook verification
-- The endpoint has a consumer-assigned **`secret_token`**; the webhook carries it so the receiver can
-  authenticate the call (header `x-moyasar-signature` or a body field — **CONFIRM**). Verify by a
-  timing-safe compare against our stored `MARKETPLACE_WEBHOOK_SECRET`, AND re-fetch the payment
-  (verify-by-fetch) as the trust anchor (same discipline as Tap/TuwaiqPay). Idempotent apply.
+## Webhook verification (CONFIRMED 2026-10-07)
+- Two authentication paths, either is accepted:
+  * **`X-Moyasar-Signature`** header = **HMAC-SHA256 of the RAW body** keyed with our secret (hex), OR
+  * a **`secret_token`** field in the body that **equals** our secret.
+- Whichever is present is compared timing-safe against `MARKETPLACE_WEBHOOK_SECRET`; a present-but-wrong one
+  is refused WITHOUT a fetch. Trust anchor = re-fetch the payment (verify-by-fetch), same as Tap/TuwaiqPay.
+  Idempotent apply. Implemented in `adapters/payment/moyasar.py`; covered by tests.
 
 ## Adapter mapping (`moyasar` adapter)
 - Declares `model=marketplace, capabilities={checkout, onboarding, split, payout}, onboarding={api}`
@@ -49,7 +51,11 @@ Webhook events: `payment_paid`, `payment_failed`, `payment_refunded`, `payment_v
 - `onboard_merchant` (api) → create entity/beneficiary → recipient id. `fetch_payout_status` → GET payout.
 - Credentials: the platform MARKETPLACE_* store (Basic-auth secret key).
 
+## Version (CONFIRMED 2026-10-07)
+- API `https://api.moyasar.com/v1` is current; HTTP Basic auth (API key = username, empty password). Our
+  adapter uses this.
+
 ## CONFIRM at build
-1. Basic-auth exact form; hosted-checkout endpoint for splits (payments vs invoices) + the returned url field.
-2. Webhook secret_token transport (header vs body) + exact field.
+1. Basic-auth exact form (confirmed above); hosted-checkout endpoint for splits (payments vs invoices) + the returned url field.
+2. ~~Webhook secret_token transport~~ — CONFIRMED above (X-Moyasar-Signature HMAC OR body secret_token).
 3. Payout status enum; onboarding/recipient-creation endpoints; whether hosted onboarding exists.

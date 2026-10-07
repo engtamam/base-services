@@ -102,11 +102,33 @@ def test_webhook_wrong_secret_token_refused_without_fetch(monkeypatch):
 
 
 def test_webhook_correct_secret_token_then_fetches(monkeypatch):
+    # body secret_token path: the token EQUALS our secret.
     monkeypatch.setattr(moy, "get_json",
                         lambda *a, **k: (200, {"id": "inv_1", "status": "paid", "amount": 10000, "currency": "SAR"}))
     g = _gw(webhook_secret="whsec")
-    out = g.verify_webhook(headers={"x-moyasar-signature": "whsec"}, body=_wh_body(), stored_currency="SAR")
+    out = g.verify_webhook(headers={}, body=_wh_body(secret_token="whsec"), stored_currency="SAR")
     assert out.verified and out.status == "succeeded"
+
+
+def test_webhook_correct_hmac_header_then_fetches(monkeypatch):
+    # X-Moyasar-Signature path: HMAC-SHA256 of the raw body keyed with our secret (hex).
+    import hmac as _h
+    from hashlib import sha256
+    monkeypatch.setattr(moy, "get_json",
+                        lambda *a, **k: (200, {"id": "inv_1", "status": "paid", "amount": 10000, "currency": "SAR"}))
+    g = _gw(webhook_secret="whsec")
+    body = _wh_body()
+    good = _h.new(b"whsec", body, sha256).hexdigest()
+    out = g.verify_webhook(headers={"x-moyasar-signature": good}, body=body, stored_currency="SAR")
+    assert out.verified and out.status == "succeeded"
+
+
+def test_webhook_wrong_hmac_header_refused_without_fetch(monkeypatch):
+    called = {"n": 0}
+    monkeypatch.setattr(moy, "get_json", lambda *a, **k: called.__setitem__("n", called["n"] + 1) or (200, {}))
+    g = _gw(webhook_secret="whsec")
+    out = g.verify_webhook(headers={"x-moyasar-signature": "deadbeef"}, body=_wh_body(), stored_currency="SAR")
+    assert out.verified is False and called["n"] == 0
 
 
 def test_onboard_api_returns_recipient_id(monkeypatch):

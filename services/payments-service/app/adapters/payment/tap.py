@@ -134,30 +134,32 @@ class TapGateway:
                               raw={"status": status})
 
     def _hashstring(self, data: dict) -> str:
-        """Tap's webhook hashstring (HMAC-SHA256 over an ordered field concat). The EXACT field order /
-        header name is CONFIRM-at-build; the documented order is used here. This is defence-in-depth — the
-        trust anchor is the verify-by-fetch below — so a mismatch marks the body untrusted, never settles."""
+        """Tap's webhook hashstring (verified 2026-10-07): HMAC-SHA256 keyed with the SECRET KEY, over the
+        ordered x_-labelled concat x_id/x_amount/x_currency/x_gateway_reference/x_payment_reference/
+        x_status/x_created, with the amount formatted to the currency's decimal places (3 for KWD/BHD/OMR/
+        JOD/IQD/TND, else 2). Defence-in-depth; the trust anchor is the verify-by-fetch below."""
         cur = str(data.get("currency", "")).upper()
-        amt = data.get("amount", 0)
+        decimals = 3 if cur in {"KWD", "BHD", "OMR", "JOD", "IQD", "TND"} else 2
         try:
-            amt_fmt = f"{float(to_major(int(to_minor(amt, cur)), cur)):.3f}" if cur else str(amt)
-        except Exception:   # noqa: BLE001
-            amt_fmt = str(amt)
+            amt_fmt = f"{float(data.get('amount', 0) or 0):.{decimals}f}"
+        except (TypeError, ValueError):
+            amt_fmt = str(data.get("amount", ""))
+        ref = data.get("reference") or {}
         fields = (f"x_id{data.get('id','')}"
                   f"x_amount{amt_fmt}"
                   f"x_currency{cur}"
-                  f"x_gateway_reference{(data.get('reference') or {}).get('gateway','')}"
-                  f"x_payment_reference{(data.get('reference') or {}).get('payment','')}"
+                  f"x_gateway_reference{ref.get('gateway','')}"
+                  f"x_payment_reference{ref.get('payment','')}"
                   f"x_status{data.get('status','')}"
-                  f"x_created{data.get('transaction',{}).get('created','') if isinstance(data.get('transaction'),dict) else ''}")
-        return hmac.new(self._webhook_secret.encode(), fields.encode(), sha256).hexdigest()
+                  f"x_created{data.get('created','')}")
+        return hmac.new(self._secret.encode(), fields.encode(), sha256).hexdigest()
 
     def verify_webhook(self, *, headers: dict[str, str], body: bytes,
                        stored_currency: str = "") -> PaymentOutcome:
-        """Trust anchor = re-fetch the charge (body is not fully signed / may be replayed). If a signature
-        header AND a webhook secret are present we ALSO compare the hashstring timing-safe as defence in
-        depth; a mismatch refuses (verified=False), never settles. GatewayUnavailable propagates so the
-        route 503s and Tap retries (reconcile is the backstop) rather than silently dropping a payment."""
+        """Trust anchor = re-fetch the charge (body is not fully signed / may be replayed). When Tap sends
+        the `hashstring` header we ALSO compare it (HMAC keyed with the secret key) timing-safe as defence
+        in depth; a present-but-wrong hashstring is hostile and refused WITHOUT a fetch. GatewayUnavailable
+        propagates so the route 503s and Tap retries rather than silently dropping a payment."""
         try:
             data = json.loads(body.decode("utf-8", "replace")) if body else {}
         except Exception:   # noqa: BLE001
@@ -168,10 +170,8 @@ class TapGateway:
         if not charge_id:
             return PaymentOutcome(status=PENDING, provider=self.driver, verified=False)
         sig = headers.get("hashstring") or headers.get("signature") or ""
-        if self._webhook_secret and sig:
-            if not hmac.compare_digest(sig, self._hashstring(data)):
-                # A present-but-wrong signature is hostile — refuse without even fetching.
-                return PaymentOutcome(status=PENDING, provider=self.driver, verified=False)
+        if sig and not hmac.compare_digest(sig, self._hashstring(data)):
+            return PaymentOutcome(status=PENDING, provider=self.driver, verified=False)
         confirmed = self.fetch_status(provider_ref=charge_id, currency=stored_currency)
         confirmed.verified = confirmed.status in (SUCCEEDED, FAILED, CANCELLED)
         return confirmed
