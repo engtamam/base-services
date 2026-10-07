@@ -33,6 +33,16 @@ BACKUP: dict[str, Any] = {
         # but worth restoring: losing it silently re-opens an option a shop was deliberately locked
         # off. Rows carry `tenant` (a platform-scope row uses tenant="").
         {"name": "commerce_option_gates", "tenant_scoped": True},
+        # The per-tenant single-select payment mode (conduit|marketplace) + platform force/lock. Config:
+        # losing it silently reverts a shop to the default mode. Rows carry `tenant` (platform = "").
+        {"name": "payment_mode_selection", "tenant_scoped": True},
+        # The platform's OWN marketplace-provider credentials (MARKETPLACE_*), sealed under SECRETS_KEK
+        # (ciphertext; KEK is env, never archived). Platform-scoped (tenant=""): restored whole, not
+        # per-tenant, so a restore keeps the platform able to run split payouts without re-entering keys.
+        {"name": "marketplace_secrets", "tenant_scoped": False},
+        # tenant -> provider sub-merchant destination id + onboarding status. The opaque payout target
+        # for each shop's split share (never the IBAN/docs — the provider holds those). Tenant-scoped.
+        {"name": "submerchant_mappings", "tenant_scoped": True},
     ],
     "excluded": [
         # Idempotency/claim keys for create_link — regenerated on demand, not data worth restoring;

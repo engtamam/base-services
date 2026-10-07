@@ -243,6 +243,19 @@
             "title": "Currency",
             "type": "string"
           },
+          "merchant_amount_minor": {
+            "anyOf": [
+              {
+                "maximum": 1000000000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Merchant Amount Minor"
+          },
           "metadata": {
             "additionalProperties": true,
             "title": "Metadata",
@@ -331,6 +344,73 @@
           "name"
         ],
         "title": "_CredKey",
+        "type": "object"
+      },
+      "_OnboardIn": {
+        "properties": {
+          "actor_ref": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Actor Ref",
+            "type": "string"
+          },
+          "data": {
+            "additionalProperties": true,
+            "title": "Data",
+            "type": "object"
+          },
+          "mode": {
+            "maxLength": 16,
+            "minLength": 1,
+            "title": "Mode",
+            "type": "string"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "mode"
+        ],
+        "title": "_OnboardIn",
+        "type": "object"
+      },
+      "_SetDestinationIn": {
+        "properties": {
+          "actor_ref": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Actor Ref",
+            "type": "string"
+          },
+          "destination_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Destination Id",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "maxLength": 16,
+            "title": "Status",
+            "type": "string"
+          },
+          "tenant": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant",
+          "destination_id"
+        ],
+        "title": "_SetDestinationIn",
         "type": "object"
       }
     }
@@ -1777,6 +1857,239 @@
           }
         },
         "summary": "Reconcile Request",
+        "tags": [
+          "internal-payments"
+        ]
+      }
+    },
+    "/internal/payments/sub-merchants/destination": {
+      "post": {
+        "description": "Record (or update) a tenant's sub-merchant destination id + status \u2014 used by the hosted-onboarding\ncallback once the provider approves, or by an operator. Stores only the opaque provider id.",
+        "operationId": "set_submerchant_destination_internal_payments_sub_merchants_destination_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_SetDestinationIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Submerchant Destination Internal Payments Sub Merchants Destination Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Submerchant Destination",
+        "tags": [
+          "internal-payments"
+        ]
+      }
+    },
+    "/internal/payments/sub-merchants/onboard": {
+      "post": {
+        "description": "Register a tenant as a sub-merchant of the platform's marketplace provider. `api` forwards the KYB\ndata to the provider and stores ONLY the returned destination id; `hosted` returns a handle for the\nclient-side flow (the destination arrives later via /sub-merchants/destination). The PROVIDER does the\nKYC; we never store the IBAN/documents. Write-ahead audited (it decides where a shop's money goes).",
+        "operationId": "onboard_submerchant_internal_payments_sub_merchants_onboard_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_OnboardIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Onboard Submerchant Internal Payments Sub Merchants Onboard Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Onboard Submerchant",
+        "tags": [
+          "internal-payments"
+        ]
+      }
+    },
+    "/internal/payments/sub-merchants/{tenant}": {
+      "get": {
+        "description": "The tenant's sub-merchant status + destination id (an opaque provider id, safe for an internal\ncaller). No bank details are ever stored, so none can be returned.",
+        "operationId": "get_submerchant_internal_payments_sub_merchants__tenant__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Submerchant Internal Payments Sub Merchants  Tenant  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Submerchant",
         "tags": [
           "internal-payments"
         ]

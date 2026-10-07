@@ -25,8 +25,10 @@ from urllib.parse import urlsplit
 from app.core.merchant_credentials import CredentialResolver
 from app.core.payment_requests import COMPLETED, EXPIRED, PaymentRequestStore
 from app.ports.event_bus import Event, EventBus
-from app.ports.payment_gateway import (CANCELLED, CAP_CHECKOUT, FAILED, MODEL_CONDUIT, PENDING,
-                                       SUCCEEDED, GatewayUnavailable, PaymentOutcome, capabilities_of)
+from app.core.split import SplitError, plan_split
+from app.ports.payment_gateway import (CANCELLED, CAP_CHECKOUT, CAP_SPLIT, FAILED, MODEL_CONDUIT,
+                                       MODEL_MARKETPLACE, PENDING, SUCCEEDED, GatewayUnavailable,
+                                       PaymentOutcome, SplitDestination, capabilities_of)
 
 # Topics live in one catalogue (app.core.payment_events); re-exported here so existing imports
 # (`from app.core.payments import TOPIC_COMPLETED`) keep working unchanged.
@@ -49,7 +51,7 @@ def _peek_provider_ref(body: bytes) -> str:
     details = payload.get("transactionDetails")
     if isinstance(details, dict) and details.get("transactionId"):
         return str(details["transactionId"])              # tuwaiqpay webhook shape
-    for key in ("provider_ref", "transactionId"):         # console / generic shapes
+    for key in ("provider_ref", "transactionId", "id"):   # console / generic / tap (top-level `id`)
         if payload.get(key):
             return str(payload[key])
     return ""
@@ -82,9 +84,15 @@ class CreatedLink:
 class PaymentService:
     def __init__(self, *, requests: PaymentRequestStore, gateways: CredentialResolver,
                  event_bus: EventBus, redirect_base_url: str, allowed_hosts: frozenset[str],
-                 link_ttl_seconds: int, is_enabled=None, select_mode=None) -> None:
+                 link_ttl_seconds: int, is_enabled=None, select_mode=None,
+                 marketplace=None, submerchants=None) -> None:
         self._req = requests
         self._gw = gateways
+        # Marketplace model wiring (None on a conduit-only deployment → marketplace mode fails closed):
+        #   marketplace   = MarketplaceGateways resolver (platform-scoped provider creds -> gateway)
+        #   submerchants  = SubMerchantStore (tenant -> active destination id)
+        self._marketplace = marketplace
+        self._submerchants = submerchants
         self._bus = event_bus
         self._redirect_base = redirect_base_url.rstrip("/")
         self._allowed_hosts = allowed_hosts
@@ -111,17 +119,15 @@ class PaymentService:
             raise PaymentsDisabled(f"payments are disabled for tenant {tenant!r}")
 
     async def _resolve_mode(self, tenant: str) -> str:
-        """The tenant's single-select payment model. Defaults to MODEL_CONDUIT (today's only wired model),
-        so no resolver — or a resolver returning the default — keeps behaviour byte-identical. A tenant
-        set to a model this build does not yet route is refused fail-closed (never billed the wrong way)."""
+        """The tenant's single-select payment model. Defaults to MODEL_CONDUIT, so no resolver — or a
+        resolver returning the default — keeps conduit behaviour byte-identical. Any other value than the
+        two known models is refused fail-closed (never billed the wrong way)."""
         if self._select_mode is None:
             return MODEL_CONDUIT
         mode = await self._select_mode(tenant) or MODEL_CONDUIT
-        if mode != MODEL_CONDUIT:
-            # The marketplace routing branch lands later in Phase 1; until then a non-conduit selection is
-            # a clear refusal, not a silent conduit charge.
+        if mode not in (MODEL_CONDUIT, MODEL_MARKETPLACE):
             raise PaymentNotConfigured(
-                f"payment mode {mode!r} is selected for tenant {tenant!r} but is not available yet")
+                f"payment mode {mode!r} is selected for tenant {tenant!r} but is not available")
         return mode
 
     async def get(self, request_id: str) -> dict | None:
@@ -131,15 +137,20 @@ class PaymentService:
 
     # ── create ──────────────────────────────────────────────────────────────────
     async def create_link(self, *, tenant: str, reference: str, amount_minor: int, currency: str,
-                          metadata: dict | None = None, return_url: str = "") -> CreatedLink:
+                          metadata: dict | None = None, return_url: str = "",
+                          merchant_amount_minor: int | None = None) -> CreatedLink:
         """Mint (or re-use) a hosted pay-link for one order. Idempotent by (tenant, reference) AND
         safe under concurrency: an ATOMIC claim on (tenant, reference) is taken BEFORE the gateway
         bill is minted, so two concurrent (or retried) calls for the same order can never mint two
-        bills / two links — exactly one wins, the others resolve to that same request."""
+        bills / two links — exactly one wins, the others resolve to that same request.
+
+        In MARKETPLACE mode the payment is SPLIT: `merchant_amount_minor` is the tenant sub-merchant's
+        share (routed to the tenant's OWN active destination), and the platform keeps the remainder as
+        commission. It is required in marketplace mode and rejected in conduit mode."""
         await self._ensure_enabled(tenant)
         # Resolve the tenant's single-select payment model up front (defaults to conduit) — fail-closed on
-        # a model this build cannot route yet, before any claim is taken or gateway bill is minted.
-        await self._resolve_mode(tenant)
+        # an unknown model, before any claim is taken or gateway bill is minted.
+        mode = await self._resolve_mode(tenant)
 
         # Fast path: a still-valid or completed request already exists → return it, no claim needed.
         # But it must be the SAME order: reusing a link whose amount/currency differs from this request
@@ -162,7 +173,8 @@ class PaymentService:
             if won:
                 return await self._mint_claimed(
                     tenant=tenant, reference=reference, request_id=rid, amount_minor=amount_minor,
-                    currency=currency, metadata=metadata, return_url=return_url)
+                    currency=currency, metadata=metadata, return_url=return_url,
+                    mode=mode, merchant_amount_minor=merchant_amount_minor)
             # Lost the claim — someone else is (or was) minting this order. Resolve to their request.
             resolved = await self._resolve_claim(tenant=tenant, reference=reference, claim=claim)
             if resolved is not None:
@@ -174,7 +186,7 @@ class PaymentService:
                     return await self._mint_claimed(
                         tenant=tenant, reference=reference, request_id=stolen_rid,
                         amount_minor=amount_minor, currency=currency, metadata=metadata,
-                        return_url=return_url)
+                        return_url=return_url, mode=mode, merchant_amount_minor=merchant_amount_minor)
             # Lost the steal too — another caller is mid-mint; re-read on the next pass.
         raise GatewayUnavailable("could not acquire a payment claim for this order; retry")
 
@@ -198,30 +210,23 @@ class PaymentService:
         return None
 
     async def _mint_claimed(self, *, tenant: str, reference: str, request_id: str, amount_minor: int,
-                            currency: str, metadata: dict | None, return_url: str) -> CreatedLink:
-        """Mint the gateway bill for a claim we won, then persist the request. Releases the claim on a
-        gateway failure so a failed attempt never permanently blocks a retry for this order."""
-        gateway = await self._gw.gateway_for(tenant)
-        if getattr(gateway, "driver", "null") == "null":
-            await self._req.release_claim(tenant=tenant, reference=reference)
-            raise PaymentNotConfigured(f"tenant {tenant!r} has no payment gateway configured")
-        # Fail-closed capability assertion (the extensibility contract): only mint a checkout on a
-        # gateway that DECLARES it can. Every conduit adapter declares CAP_CHECKOUT, so this never fires
-        # today — it is the seam that, once a marketplace adapter without a plain checkout exists, refuses
-        # a checkout against it clearly instead of making a half-supported call. The null gateway (which
-        # declares nothing) is already handled above, so this only ever sees a real adapter.
-        if CAP_CHECKOUT not in capabilities_of(gateway):
-            await self._req.release_claim(tenant=tenant, reference=reference)
-            raise PaymentNotConfigured(
-                f"tenant {tenant!r} gateway {getattr(gateway, 'driver', '')!r} does not support checkout")
+                            currency: str, metadata: dict | None, return_url: str,
+                            mode: str = MODEL_CONDUIT,
+                            merchant_amount_minor: int | None = None) -> CreatedLink:
+        """Mint the gateway bill for a claim we won, then persist the request. Releases the claim on ANY
+        failure so a failed attempt never permanently blocks a retry for this order. Branches on the
+        resolved payment model: conduit (the shop's own gateway) or marketplace (a split checkout on the
+        platform account)."""
         try:
-            # OFFLOAD the blocking gateway HTTP off the event loop (payments-001): prepare_checkout
-            # does a synchronous http.client round trip with a 30s timeout.
-            session = await asyncio.to_thread(
-                gateway.prepare_checkout,
-                amount_minor=amount_minor, currency=currency, reference=reference,
-                return_url=return_url, metadata=metadata or {})
-        except GatewayUnavailable:
+            if mode == MODEL_MARKETPLACE:
+                session, meta = await self._mint_marketplace(
+                    tenant=tenant, reference=reference, amount_minor=amount_minor, currency=currency,
+                    metadata=metadata, return_url=return_url, merchant_amount_minor=merchant_amount_minor)
+            else:
+                session, meta = await self._mint_conduit(
+                    tenant=tenant, reference=reference, amount_minor=amount_minor, currency=currency,
+                    metadata=metadata, return_url=return_url, merchant_amount_minor=merchant_amount_minor)
+        except Exception:
             await self._req.release_claim(tenant=tenant, reference=reference)
             raise
         if not session.ok or not session.redirect_url:
@@ -231,8 +236,58 @@ class PaymentService:
             request_id=request_id, tenant=tenant, reference=reference, amount_minor=amount_minor,
             currency=currency, provider=session.provider, provider_ref=session.provider_ref,
             redirect_url=session.redirect_url, ttl_seconds=self._ttl,
-            expires_at_provider=session.expires_at)
+            expires_at_provider=session.expires_at, meta=meta)
         return self._to_link(row)
+
+    async def _mint_conduit(self, *, tenant, reference, amount_minor, currency, metadata, return_url,
+                            merchant_amount_minor):
+        """Conduit: the shop's OWN gateway mints a plain hosted checkout. A split amount is meaningless
+        here, so a caller that passed one in conduit mode is a bug — refuse it rather than ignore it."""
+        if merchant_amount_minor is not None:
+            raise PaymentNotConfigured(
+                "merchant_amount_minor is only valid in marketplace mode; this tenant is on conduit")
+        gateway = await self._gw.gateway_for(tenant)
+        if getattr(gateway, "driver", "null") == "null":
+            raise PaymentNotConfigured(f"tenant {tenant!r} has no payment gateway configured")
+        if CAP_CHECKOUT not in capabilities_of(gateway):
+            raise PaymentNotConfigured(
+                f"tenant {tenant!r} gateway {getattr(gateway, 'driver', '')!r} does not support checkout")
+        session = await asyncio.to_thread(
+            gateway.prepare_checkout, amount_minor=amount_minor, currency=currency, reference=reference,
+            return_url=return_url, metadata=metadata or {})
+        return session, {"mode": MODEL_CONDUIT}
+
+    async def _mint_marketplace(self, *, tenant, reference, amount_minor, currency, metadata, return_url,
+                                merchant_amount_minor):
+        """Marketplace: a SPLIT checkout on the platform account. The tenant's share goes to its OWN active
+        sub-merchant destination; the platform keeps the remainder. Server-authoritative + fail-closed at
+        every step: no marketplace wired, no active sub-merchant, missing/invalid share → refuse, mint
+        nothing. A tenant can only ever split to its own destination — never an arbitrary caller-supplied
+        account."""
+        if self._marketplace is None or self._submerchants is None:
+            raise PaymentNotConfigured("marketplace mode is not configured on this deployment")
+        gateway = await self._marketplace.gateway()
+        if gateway is None:
+            raise PaymentNotConfigured("no marketplace provider is configured")
+        if CAP_SPLIT not in capabilities_of(gateway):
+            raise PaymentNotConfigured(
+                f"marketplace provider {getattr(gateway, 'driver', '')!r} does not support split")
+        if merchant_amount_minor is None:
+            raise PaymentNotConfigured("marketplace mode requires merchant_amount_minor (the shop's share)")
+        destination_id = await self._submerchants.destination_id(tenant)   # ACTIVE only
+        if not destination_id:
+            raise PaymentNotConfigured(
+                f"tenant {tenant!r} has no ACTIVE sub-merchant destination — onboard it first")
+        try:
+            plan = plan_split(total_minor=amount_minor, currency=currency,
+                              destinations=[SplitDestination(destination_id, int(merchant_amount_minor))])
+        except SplitError as exc:
+            raise PaymentNotConfigured(f"invalid split: {exc}") from exc
+        session = await asyncio.to_thread(
+            gateway.prepare_split_checkout, amount_minor=amount_minor, currency=currency,
+            reference=reference, destinations=list(plan.destinations), return_url=return_url,
+            metadata=metadata or {})
+        return session, {"mode": MODEL_MARKETPLACE, "split": plan.to_dict()}
 
     def _to_link(self, row: dict) -> CreatedLink:
         return CreatedLink(
@@ -343,6 +398,7 @@ class PaymentService:
         verification is never weakened."""
         ref = _peek_provider_ref(body)
         stored_currency = ""
+        mode = MODEL_CONDUIT
         if ref:
             known = await self._req.by_provider_ref(tenant=tenant, provider_ref=ref)
             if known is None:
@@ -351,11 +407,26 @@ class PaymentService:
             # no currency of its own, so hand it the currency WE recorded for this payment as a fallback
             # for an unusual status-response shape — a real success is no longer refused as unverifiable.
             stored_currency = str(known.get("currency", ""))
-        gateway = await self._gw.gateway_for(tenant)
+            mode = str(known.get("mode", "") or MODEL_CONDUIT)
+        gateway = await self._gateway_for_mode(tenant, mode)
         # OFFLOAD (payments-001): verify_webhook may itself do a blocking verify-by-fetch round trip.
         outcome = await asyncio.to_thread(gateway.verify_webhook, headers=headers, body=body,
                                           stored_currency=stored_currency)
         return await self.apply_outcome(tenant=tenant, outcome=outcome)
+
+    async def _gateway_for_mode(self, tenant: str, mode: str):
+        """The gateway that owns a request of this mode: the platform's marketplace provider for a
+        marketplace row, otherwise the tenant's own conduit gateway. Fail-closed if a marketplace row
+        is seen but no marketplace provider is wired/configured (so a stale/forged mode cannot silently
+        verify against the wrong gateway)."""
+        if mode == MODEL_MARKETPLACE:
+            if self._marketplace is None:
+                raise GatewayUnavailable("marketplace mode is not configured on this deployment")
+            gw = await self._marketplace.gateway()
+            if gw is None:
+                raise GatewayUnavailable("no marketplace provider is configured")
+            return gw
+        return await self._gw.gateway_for(tenant)
 
     async def reconcile(self, *, tenant: str, request_id: str) -> dict | None:
         """Pull the current status from the gateway for a request whose webhook was missed, and apply
@@ -368,7 +439,7 @@ class PaymentService:
         # request. Any other terminal state is settled — return it unchanged.
         if row.get("status") not in (PENDING, EXPIRED):
             return row
-        gateway = await self._gw.gateway_for(tenant)
+        gateway = await self._gateway_for_mode(tenant, str(row.get("mode", "") or MODEL_CONDUIT))
         outcome = await asyncio.to_thread(                 # OFFLOAD blocking fetch (payments-001)
             gateway.fetch_status, provider_ref=row.get("provider_ref", ""),
             currency=row.get("currency", ""))

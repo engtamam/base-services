@@ -104,6 +104,9 @@ def build_manifest(
             {"path": "/internal/payments/requests", "tier": "internal", "method": "POST"},
             {"path": "/internal/payments/requests/{}", "tier": "internal", "method": "GET"},
             {"path": "/internal/payments/requests/{}/reconcile", "tier": "internal", "method": "POST"},
+            {"path": "/internal/payments/sub-merchants/onboard", "tier": "internal", "method": "POST"},
+            {"path": "/internal/payments/sub-merchants/destination", "tier": "internal", "method": "POST"},
+            {"path": "/internal/payments/sub-merchants/{}", "tier": "internal", "method": "GET"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         # FILL THIS too, or leave it empty deliberately. Same trap as capabilities: an empty

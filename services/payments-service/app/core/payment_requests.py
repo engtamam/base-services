@@ -49,7 +49,7 @@ class PaymentRequestStore:
     async def create(self, *, tenant: str, reference: str, amount_minor: int, currency: str,
                      provider: str, provider_ref: str, redirect_url: str,
                      ttl_seconds: int, expires_at_provider: str = "",
-                     request_id: str | None = None) -> dict:
+                     request_id: str | None = None, meta: dict | None = None) -> dict:
         """Insert a new pending request. `request_id` is the unguessable token (also the redirector
         key) — supplied by the caller that won the (tenant, reference) claim, or freshly minted here.
         Created via cas insert-if-absent so the row carries version=1 and can be transitioned later."""
@@ -66,6 +66,10 @@ class PaymentRequestStore:
             "expires_at_provider": expires_at_provider,
             "applied_event_id": "", "paid_amount_minor": 0, "paid_currency": "",
             "amount_mismatch": False,
+            # Mode + (for marketplace) the server-authoritative split plan. Carried so the webhook/reconcile
+            # path can pick the right gateway and a consumer can see how the payment was split.
+            "mode": (meta or {}).get("mode", ""),
+            "meta": dict(meta or {}),
         }
         if not await self._s.cas(_COLL, rid, 0, row):        # insert-if-absent
             raise PaymentRequestError("payment request id collision")

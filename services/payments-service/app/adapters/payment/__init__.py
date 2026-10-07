@@ -10,8 +10,9 @@ from typing import Any
 
 from app.adapters.payment.console import ConsoleGateway
 from app.adapters.payment.null import NullGateway
+from app.adapters.payment.tap import TapGateway
 from app.adapters.payment.tuwaiqpay import TuwaiqPayGateway
-from app.ports.payment_gateway import PaymentGateway
+from app.ports.payment_gateway import MarketplaceGateway, PaymentGateway
 
 _REGISTRY: dict[str, type] = {
     "console": ConsoleGateway,
@@ -22,6 +23,15 @@ _REGISTRY: dict[str, type] = {
 # The drivers a tenant may actually select (null is the internal fail-closed default, not a choice).
 SELECTABLE_DRIVERS = tuple(d for d in _REGISTRY if d != "null")
 
+# MARKETPLACE providers are a SEPARATE registry: they are selected by the PLATFORM (MARKETPLACE_PROVIDER),
+# built from platform-scoped creds, and speak the MarketplaceGateway contract — not the per-tenant conduit
+# PaymentGateway. Keeping them apart stops a tenant ever selecting a marketplace provider as its own
+# conduit gateway, and vice-versa.
+_MARKETPLACE_REGISTRY: dict[str, type] = {
+    "tap": TapGateway,
+}
+MARKETPLACE_DRIVERS = tuple(_MARKETPLACE_REGISTRY)
+
 
 def build_gateway(driver: str, config: dict[str, Any] | None = None) -> PaymentGateway:
     """Construct the adapter for `driver` from `config` (already-decrypted per-tenant credentials).
@@ -29,6 +39,13 @@ def build_gateway(driver: str, config: dict[str, Any] | None = None) -> PaymentG
     tenant refuses payments with a clear reason instead of 500-ing the whole route."""
     cls = _REGISTRY.get((driver or "").strip().lower(), NullGateway)
     return cls(**(config or {}))
+
+
+def build_marketplace_gateway(driver: str, config: dict[str, Any] | None = None) -> MarketplaceGateway | None:
+    """Construct the marketplace adapter for `driver` from platform-scoped config, or None for an unknown
+    driver (fail-closed: the caller then refuses marketplace rather than guessing a provider)."""
+    cls = _MARKETPLACE_REGISTRY.get((driver or "").strip().lower())
+    return cls(**(config or {})) if cls is not None else None
 
 
 def describe_drivers() -> list[dict[str, Any]]:

@@ -19,6 +19,8 @@ def test_boot_guard_refuses_prod_with_merchant_credentials_default_open():
 
 def test_boot_guard_passes_when_declared():
     pol = ('{"/internal/payments/merchant-credentials": ["operations"], '
+           '"/internal/payments/sub-merchants/onboard": ["operations"], '
+           '"/internal/payments/sub-merchants/destination": ["operations"], '
            '"/internal/privacy/erase": ["compliance-service"], '
            '"/internal/backup/import": ["backup-service"]}')
     _settings(ENV="production", INTERNAL_ROUTE_POLICY_JSON=pol).assert_internal_policy_ok()

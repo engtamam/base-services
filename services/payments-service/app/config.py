@@ -384,6 +384,10 @@ class Settings(BaseSettings):
     # person, or import a backup over live data (payments-008).
     _DESTRUCTIVE_INTERNAL_ROUTES = (
         "/internal/payments/merchant-credentials",
+        # Sub-merchant onboarding/destination set a shop's PAYOUT TARGET — money-routing, same class as a
+        # credential write, so they must name their caller in production (not just hold the flat token).
+        "/internal/payments/sub-merchants/onboard",
+        "/internal/payments/sub-merchants/destination",
         "/internal/privacy/erase",
         "/internal/backup/import",
     )

@@ -9,11 +9,14 @@ from __future__ import annotations
 from fastapi import Request
 
 from app.config import Settings, get_settings
+from app.core.marketplace_credentials import (MarketplaceCredentials, MarketplaceGateways,
+                                             marketplace_secret_store)
 from app.core.merchant_credentials import MerchantGateways, merchant_secret_store
 from app.core.option_gate import OptionGate
 from app.core.payment_mode import PaymentModeGate
 from app.core.payment_requests import PaymentRequestStore
 from app.core.payments import PaymentService
+from app.core.submerchant import SubMerchantStore
 from app.core.secret_store import SecretStore
 
 
@@ -59,6 +62,24 @@ def build_mode_gate(request: Request) -> PaymentModeGate:
     return PaymentModeGate(request.app.state.container.datastore)
 
 
+def build_marketplace_secrets(request: Request, settings: Settings | None = None):
+    settings = settings or get_settings()
+    return marketplace_secret_store(
+        request.app.state.container.datastore, settings.SECRETS_KEK,
+        rotation_window_s=settings.SECRETS_ROTATION_WINDOW_SECONDS)
+
+
+def build_marketplace_gateways(request: Request, settings: Settings | None = None) -> MarketplaceGateways:
+    settings = settings or get_settings()
+    return MarketplaceGateways(
+        MarketplaceCredentials(build_marketplace_secrets(request, settings)),
+        gateway_timeout=settings.PAYMENTS_GATEWAY_TIMEOUT_SECONDS)
+
+
+def build_submerchants(request: Request) -> SubMerchantStore:
+    return SubMerchantStore(request.app.state.container.datastore)
+
+
 def build_payment_service(request: Request, settings: Settings | None = None) -> PaymentService:
     settings = settings or get_settings()
     container = request.app.state.container
@@ -75,4 +96,7 @@ def build_payment_service(request: Request, settings: Settings | None = None) ->
         # hard-lock it per shop (or fleet-wide); create_link refuses when it is off.
         is_enabled=lambda tenant: gate.is_enabled(tenant, "external_paylink"),
         # The tenant's single-select payment model (defaults to conduit, so unchanged today).
-        select_mode=lambda tenant: mode_gate.selected(tenant))
+        select_mode=lambda tenant: mode_gate.selected(tenant),
+        # Marketplace model wiring — platform-scoped provider + per-tenant sub-merchant destination.
+        marketplace=build_marketplace_gateways(request, settings),
+        submerchants=build_submerchants(request))

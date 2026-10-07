@@ -148,3 +148,88 @@ class PaymentGateway(Protocol):
 
     def fetch_status(self, *, provider_ref: str, currency: str = "") -> PaymentOutcome:
         ...
+
+
+# ── marketplace model: split checkout, sub-merchant onboarding, payout ─────────────
+# Payout (settlement) statuses — normalised, like the charge statuses above.
+PAYOUT_PENDING, PAYOUT_PAID, PAYOUT_FAILED = "pending", "paid", "failed"
+
+
+@dataclass
+class SplitDestination:
+    """One sub-merchant's share of a split payment: the provider's destination id + the amount (in minor
+    units) to route to it. The platform's commission is the IMPLICIT remainder (total - sum of shares),
+    which stays with the platform's master account — never an attacker-settable field."""
+
+    destination_id: str
+    amount_minor: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"destination_id": self.destination_id, "amount_minor": int(self.amount_minor)}
+
+
+@dataclass
+class OnboardResult:
+    """The outcome of registering a sub-merchant with the provider. `destination_id` is the ONLY durable
+    thing we persist (never the IBAN/documents). For hosted onboarding (mode B) the merchant finishes on
+    the provider, so `redirect_url`/`handle` carries the embed/link and `status` is pending until a
+    callback confirms. ok=False (+ error) when the provider refuses."""
+
+    ok: bool
+    provider: str = ""
+    destination_id: str = ""
+    status: str = "pending"          # pending | active | rejected
+    redirect_url: str = ""           # hosted (mode B) embed/continue URL, when applicable
+    handle: str = ""                 # hosted SDK handle/token, when applicable (never a secret)
+    extra: dict[str, Any] = field(default_factory=dict)
+    error: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"ok": self.ok, "provider": self.provider, "destination_id": self.destination_id,
+                "status": self.status, "redirect_url": self.redirect_url, "handle": self.handle,
+                "extra": self.extra, "error": self.error}
+
+
+@dataclass
+class PayoutStatus:
+    """What the provider says about a sub-merchant payout/settlement — for reconciliation."""
+
+    status: str = PAYOUT_PENDING     # pending | paid | failed
+    provider: str = ""
+    payout_ref: str = ""
+    amount_minor: int = 0
+    currency: str = ""
+    verified: bool = False
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@runtime_checkable
+class MarketplaceGateway(Protocol):
+    """The contract for a MARKETPLACE provider (Tap, Moyasar …): the platform's single account splits one
+    payment across sub-merchants and the provider pays them out. Distinct from the conduit PaymentGateway:
+    a checkout carries `destinations`, and there are onboarding + payout operations. An adapter may
+    implement BOTH protocols (a marketplace that also offers plain checkout). The core asserts the
+    `split`/`onboarding`/`payout` capability before using the matching method (fail-closed)."""
+
+    driver: str
+    model: str
+    capabilities: frozenset[str]
+    onboarding_modes: frozenset[str]
+
+    def prepare_split_checkout(self, *, amount_minor: int, currency: str, reference: str,
+                               destinations: list[SplitDestination], return_url: str = "",
+                               metadata: dict | None = None) -> CheckoutSession:
+        ...
+
+    def verify_webhook(self, *, headers: dict[str, str], body: bytes,
+                       stored_currency: str = "") -> PaymentOutcome:
+        ...
+
+    def fetch_status(self, *, provider_ref: str, currency: str = "") -> PaymentOutcome:
+        ...
+
+    def onboard_merchant(self, *, mode: str, data: dict) -> OnboardResult:
+        ...
+
+    def fetch_payout_status(self, *, payout_ref: str) -> PayoutStatus:
+        ...

@@ -97,7 +97,24 @@ class MarketplaceCredentials:
             provider=await self.provider(),
             secret_key=await g(SECRET_KEY), base=base, webhook_secret=await g(WEBHOOK_SECRET))
 
-    async def webhook_secrets(self) -> tuple[str, ...]:
-        """Every webhook secret currently valid (current + previous during rotation) — used where WE
-        verify a signed inbound webhook and must not reject a not-yet-rotated provider secret."""
-        return await self._secrets.accepted(tenant=PLATFORM, name=WEBHOOK_SECRET)
+
+class MarketplaceGateways:
+    """Resolve the platform's sealed marketplace credentials into a ready MarketplaceGateway. The plaintext
+    lives only inside the returned adapter for one operation. Unknown/unconfigured provider → None, so the
+    caller refuses marketplace (fail-closed) rather than minting against a guessed provider."""
+
+    def __init__(self, creds: MarketplaceCredentials, *, gateway_timeout: int = 30) -> None:
+        self._creds = creds
+        self._timeout = gateway_timeout
+
+    async def configured(self) -> bool:
+        return await self._creds.configured()
+
+    async def gateway(self):
+        from app.adapters.payment import build_marketplace_gateway
+        cfg = await self._creds.config()
+        if not cfg.provider or not cfg.secret_key:
+            return None                      # fail-closed: no provider/key → no marketplace gateway
+        return build_marketplace_gateway(cfg.provider, {
+            "api_key": cfg.secret_key, "base": cfg.base, "webhook_secret": cfg.webhook_secret,
+            "timeout": self._timeout})

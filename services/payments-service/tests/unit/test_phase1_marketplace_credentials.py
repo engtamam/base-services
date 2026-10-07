@@ -130,10 +130,10 @@ def test_info_and_list_never_expose_the_value():
         assert "supersecret" not in (i.hint or "")
 
 
-# ── rotation: previous secret accepted during the window ──────────────────────────
-def test_webhook_secrets_accepts_current_and_previous_during_rotation():
+# ── rotation: previous secret accepted during the window (SecretStore.accepted) ───
+def test_webhook_secret_rotation_keeps_the_previous_during_the_window():
     _, s = _store()
     run(s.set(tenant="", name=WEBHOOK_SECRET, value="old"))
     run(s.set(tenant="", name=WEBHOOK_SECRET, value="new"))
-    accepted = run(MarketplaceCredentials(s).webhook_secrets())
+    accepted = run(s.accepted(tenant="", name=WEBHOOK_SECRET))
     assert "new" in accepted and "old" in accepted            # both valid mid-rotation

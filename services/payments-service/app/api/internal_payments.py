@@ -6,6 +6,7 @@ returns a stored value — the write-only guarantee the sealed store depends on 
 """
 from __future__ import annotations
 
+import asyncio
 import json
 
 from fastapi import APIRouter, Depends, Request
@@ -14,12 +15,15 @@ from starlette.responses import JSONResponse
 
 from app.adapters.payment_http import validate_gateway_base
 from app.api.internal import require_internal_token
-from app.api.payments_deps import build_merchant_secrets, build_payment_service
+from app.api.payments_deps import (build_marketplace_gateways, build_merchant_secrets,
+                                   build_payment_service, build_submerchants)
 from app.core.currency import SUPPORTED_CURRENCIES
 from app.core.merchant_credentials import API_BASE, SETTABLE_NAMES
 from app.core.payments import (GatewayUnavailable, PaymentNotConfigured, PaymentsDisabled,
                                RequestConflict)
 from app.core.secret_store import SecretError
+from app.core.submerchant import SubMerchantError
+from app.ports.payment_gateway import CAP_ONBOARDING, ONBOARDING_MODES, capabilities_of, onboarding_modes_of
 
 router = APIRouter(prefix="/internal/payments", tags=["internal-payments"])
 
@@ -110,6 +114,9 @@ class _CreateIn(BaseModel):
     currency: str = Field(min_length=3, max_length=3)
     return_url: str = Field(default="", max_length=2048)
     metadata: dict = Field(default_factory=dict)
+    # MARKETPLACE mode only: the sub-merchant (shop) share, routed to the tenant's OWN active destination;
+    # the platform keeps the remainder as commission. Required in marketplace mode, rejected in conduit.
+    merchant_amount_minor: int | None = Field(default=None, ge=1, le=_MAX_AMOUNT_MINOR)
 
 
 def _reject_metadata(metadata: dict) -> JSONResponse | None:
@@ -140,7 +147,8 @@ async def create_request(request: Request, body: _CreateIn) -> dict:
     try:
         link = await svc.create_link(
             tenant=body.tenant, reference=body.reference, amount_minor=body.amount_minor,
-            currency=body.currency.upper(), metadata=body.metadata, return_url=body.return_url)
+            currency=body.currency.upper(), metadata=body.metadata, return_url=body.return_url,
+            merchant_amount_minor=body.merchant_amount_minor)
     except PaymentNotConfigured as exc:
         return JSONResponse({"ok": False, "reason": str(exc), "code": "NOT_CONFIGURED"}, status_code=409)
     except PaymentsDisabled as exc:
@@ -202,3 +210,95 @@ async def reconcile_request(request: Request, request_id: str, tenant: str) -> d
         metadata={"status": row.get("status"), "amount_minor": row.get("amount_minor"),
                   "currency": row.get("currency")})
     return {"ok": True, **_public_view(row)}
+
+
+# ── marketplace: sub-merchant onboarding (write-only on the payout target) ─────────
+_MAX_ONBOARD_BYTES = 16384
+
+
+class _OnboardIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+    mode: str = Field(min_length=1, max_length=16)       # "api" | "hosted"
+    data: dict = Field(default_factory=dict)             # KYB fields (api) or handle/redirect (hosted)
+    actor_ref: str = Field(default="", max_length=128)
+
+
+class _SetDestinationIn(BaseModel):
+    tenant: str = Field(min_length=1, max_length=128)
+    destination_id: str = Field(min_length=1, max_length=256)   # opaque provider id — never a bank detail
+    status: str = Field(default="active", max_length=16)        # active | pending | rejected
+    actor_ref: str = Field(default="", max_length=128)
+
+
+@router.post("/sub-merchants/onboard", dependencies=[Depends(require_internal_token)])
+async def onboard_submerchant(request: Request, body: _OnboardIn) -> dict:
+    """Register a tenant as a sub-merchant of the platform's marketplace provider. `api` forwards the KYB
+    data to the provider and stores ONLY the returned destination id; `hosted` returns a handle for the
+    client-side flow (the destination arrives later via /sub-merchants/destination). The PROVIDER does the
+    KYC; we never store the IBAN/documents. Write-ahead audited (it decides where a shop's money goes)."""
+    if body.mode not in ONBOARDING_MODES:
+        return JSONResponse({"ok": False, "reason": f"unknown onboarding mode; allowed: {sorted(ONBOARDING_MODES)}"},
+                            status_code=422)
+    if len(json.dumps(body.data, default=str)) > _MAX_ONBOARD_BYTES:
+        return JSONResponse({"ok": False, "reason": "onboarding data too large"}, status_code=422)
+    gw = await build_marketplace_gateways(request).gateway()
+    if gw is None:
+        return JSONResponse({"ok": False, "reason": "no marketplace provider is configured",
+                             "code": "NOT_CONFIGURED"}, status_code=409)
+    if CAP_ONBOARDING not in capabilities_of(gw) or body.mode not in onboarding_modes_of(gw):
+        return JSONResponse({"ok": False, "reason": "provider does not support this onboarding mode",
+                             "code": "UNSUPPORTED"}, status_code=409)
+    # WRITE-AHEAD audit: onboarding sets a payout target — an unprovable change is exactly what an
+    # incident review must attribute. The data (which may carry PII) is NEVER logged, only the action.
+    await request.app.state.auditor.record(
+        "payments.submerchant_onboarded", actor=body.actor_ref or "service:internal", tenant=body.tenant,
+        resource=f"submerchant:{body.tenant}", ip=request.client.host if request.client else "",
+        metadata={"mode": body.mode, "provider": getattr(gw, "driver", "")})
+    try:
+        result = await asyncio.to_thread(gw.onboard_merchant, mode=body.mode, data=dict(body.data))
+    except GatewayUnavailable as exc:
+        return JSONResponse({"ok": False, "reason": str(exc), "code": "GATEWAY_UNAVAILABLE"}, status_code=502)
+    if not result.ok:
+        return JSONResponse({"ok": False, "reason": result.error or "onboarding failed"}, status_code=409)
+    # Persist the mapping only when the provider returned a destination id (api path, or an already-active
+    # hosted result). A hosted flow with no id yet stays unrecorded until its callback.
+    if result.destination_id:
+        try:
+            await build_submerchants(request).set(
+                tenant=body.tenant, provider=result.provider or getattr(gw, "driver", ""),
+                destination_id=result.destination_id, status=result.status, actor_ref=body.actor_ref)
+        except SubMerchantError as exc:
+            return JSONResponse({"ok": False, "reason": str(exc)}, status_code=422)
+    return {"ok": True, **result.to_dict()}
+
+
+@router.post("/sub-merchants/destination", dependencies=[Depends(require_internal_token)])
+async def set_submerchant_destination(request: Request, body: _SetDestinationIn) -> dict:
+    """Record (or update) a tenant's sub-merchant destination id + status — used by the hosted-onboarding
+    callback once the provider approves, or by an operator. Stores only the opaque provider id."""
+    await request.app.state.auditor.record(
+        "payments.submerchant_destination_set", actor=body.actor_ref or "service:internal",
+        tenant=body.tenant, resource=f"submerchant:{body.tenant}",
+        ip=request.client.host if request.client else "", metadata={"status": body.status})
+    # The store requires a provider; derive it from the configured marketplace provider ("unknown" if
+    # none is wired, so a destination can still be recorded for an operator-managed flow).
+    gw = await build_marketplace_gateways(request).gateway()
+    provider = getattr(gw, "driver", "") if gw is not None else ""
+    try:
+        m = await build_submerchants(request).set(
+            tenant=body.tenant, provider=provider or "unknown", destination_id=body.destination_id,
+            status=body.status, actor_ref=body.actor_ref)
+    except SubMerchantError as exc:
+        return JSONResponse({"ok": False, "reason": str(exc)}, status_code=422)
+    return {"ok": True, "tenant": m.tenant, "status": m.status, "destination_id": m.destination_id}
+
+
+@router.get("/sub-merchants/{tenant}", dependencies=[Depends(require_internal_token)])
+async def get_submerchant(request: Request, tenant: str) -> dict:
+    """The tenant's sub-merchant status + destination id (an opaque provider id, safe for an internal
+    caller). No bank details are ever stored, so none can be returned."""
+    m = await build_submerchants(request).get(tenant)
+    if m is None:
+        return {"ok": True, "tenant": tenant, "status": "none", "destination_id": ""}
+    return {"ok": True, "tenant": m.tenant, "provider": m.provider, "status": m.status,
+            "destination_id": m.destination_id}

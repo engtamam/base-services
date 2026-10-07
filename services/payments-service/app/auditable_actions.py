@@ -187,4 +187,23 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
         "why": "reconcile pulls the gateway's status and can move a request to paid; it is a money "
                "action and must be attributable to whoever triggered it (payments-013)",
     },
+    {
+        "action": "payments.submerchant_onboarded",
+        "source": "internal",
+        "critical": True,
+        "resource": "submerchant",
+        "why": "onboarding registers a tenant as a sub-merchant and sets its PAYOUT TARGET — where that "
+               "shop's share of every split is sent. Silently creating or repointing it is a money-"
+               "redirection move an incident review must attribute, so an unrecordable change must not "
+               "proceed. The KYB data (which may carry PII) is never logged, only the action",
+    },
+    {
+        "action": "payments.submerchant_destination_set",
+        "source": "internal",
+        "critical": True,
+        "resource": "submerchant",
+        "why": "setting a sub-merchant's destination id (hosted-onboarding callback or operator) decides "
+               "where a shop's payouts land; like onboarding it is a money-path change that must be "
+               "attributable and cannot proceed unrecorded",
+    },
 ]
