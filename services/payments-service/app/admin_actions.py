@@ -101,4 +101,31 @@ ADMIN_ACTIONS: list[dict[str, Any]] = [
         "capability": "platform.config", "group": "Commerce", "confirm": True,
         "params": [{"name": "option", "in": "path", "type": "string", "required": True}],
     },
+    {
+        "id": "operator.get_payment_mode", "label": "Payment mode (conduit / marketplace)",
+        "method": "GET", "path": "/api/v1/app/operator/payment-mode",
+        "capability": "platform.config", "group": "Commerce",
+        "params": [{"name": "tenant", "in": "query", "type": "string", "required": False,
+                    "help": "leave empty for the platform force/default"}],
+    },
+    {
+        "id": "operator.set_payment_mode", "label": "Select / force the payment mode",
+        "method": "PUT", "path": "/api/v1/app/operator/payment-mode",
+        "capability": "platform.config", "group": "Commerce", "confirm": True,
+        "params": [
+            {"name": "mode", "in": "body", "type": "string", "required": True,
+             "help": "conduit or marketplace"},
+            {"name": "tenant", "in": "body", "type": "string", "required": False,
+             "help": "leave empty to force/default fleet-wide"},
+            {"name": "locked", "in": "body", "type": "boolean", "required": False},
+            {"name": "force", "in": "body", "type": "boolean", "required": False,
+             "help": "required to change a scope that is already locked"},
+        ],
+    },
+    {
+        "id": "operator.view_submerchant", "label": "Sub-merchant onboarding status",
+        "method": "GET", "path": "/api/v1/app/operator/sub-merchants/{tenant}",
+        "capability": "platform.config", "group": "Commerce",
+        "params": [{"name": "tenant", "in": "path", "type": "string", "required": True}],
+    },
 ]

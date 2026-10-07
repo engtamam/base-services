@@ -331,30 +331,35 @@ check. One release.
 - [x] Attacker-mindset security tests **+** bug/edge tests (106 Phase 1 tests); full suite + 55 fleet gates
       green; OpenAPI checked.
 
-### ☐ Phase 2 — Second provider + payout reconciliation + operator surface
+### ◐ Phase 2 — Second provider + payout reconciliation + operator surface (code-complete; release held)
 
-- [ ] **Second adapter — Moyasar** (the one not done in Phase 1) — proves provider-neutrality. Confirm
-      whether it offers `hosted` onboarding (mode B) before declaring it; declare `onboarding={api}` only
-      until confirmed.
-- [ ] **Payout reconciliation sweep** — reuse the `reconcile_sweep` shape for missed payout webhooks
-      (paged, idempotent, per-row isolated, OFF by default).
-- [ ] **Operator surface** — manage the marketplace option + (platform) marketplace credentials + view
-      sub-merchant onboarding status, all audited; no secret reads.
-- [ ] **Docs** — consuming-platform integration guide: onboarding fields per provider, split request shape,
-      settlement/payout cycle, and the regulatory decision table (who holds funds → licence).
+Code-complete on the phase branch (commits 2a/2b/2c); NO release yet. 52 Phase 2 tests; full suite + 55
+fleet gates green.
 
-**DoD:** both providers pass the same capability tests; payout reconcile proven idempotent; operator routes
-audited; OpenAPI in sync; release.
+- [x] **Second adapter — Moyasar** — proves provider-neutrality (same MarketplaceGateway contract; Basic
+      auth, minor-unit `splits`, secret_token webhook). Declares `onboarding={api}` (hosted = CONFIRM).
+- [x] **Payout reconciliation sweep** — `run_payout_sweep_once` (paged, idempotent, per-row isolated, OFF
+      by default) + a daily cron; payout webhook route; `payout.settled`/`payout.failed` events.
+- [x] **Operator surface** — internal routes manage marketplace credentials (write-only) + sub-merchant
+      onboarding + payment mode; operator-panel routes (payment-mode get/set, sub-merchant view) are
+      capability-gated (`platform.config`), audited, no secret reads, declared in admin_actions.
+- [~] **Docs** — per-provider references (`docs/integrations/{tap,moyasar}-marketplace-api-reference.md`) +
+      events (`docs/integration/events.md`) + this design doc's regulatory table. A single consuming-
+      platform integration guide can be assembled from these before GA (follow-up).
+
+**DoD:** both providers pass the same capability tests ✓; payout reconcile proven idempotent ✓; operator
+routes audited ✓; OpenAPI in sync ✓. Release: HELD until the whole plan ships together.
 
 **🔒 Security hardening — attacker-mindset, CHECK each (≥50 tests, all green):**
-- [ ] **Payout reconcile** is idempotent and **bounded/paged** — no double-pay on a replayed/missed
-      webhook, no unbounded scan a caller could weaponise (DoS). Tested with a replayed payout callback.
-- [ ] **Operator surface**: authz-capability-gated, **no secret reads** (`safety:no-secret-reads`),
-      every mutation audited write-ahead. Tested that a non-privileged caller is refused and no value leaks.
-- [ ] **Second provider** passes the SAME adversarial battery (forged/replayed/tampered webhook, tampered
-      split, SSRF base, secret-read attempt) — provider-neutral security, not provider-specific.
-- [ ] **Cross-tenant isolation**: a tenant can never resolve, pay out to, or onboard under another
-      tenant's sub-merchant/destination. Tested with a forged/mismatched tenant.
+- [x] **Payout reconcile** idempotent (terminal-once CAS, replay/race tested) and **bounded/keyset-paged**
+      (never a scan); per-row isolated. Tested with a replayed payout + a failing row.
+- [x] **Operator surface**: `platform.config`-gated (non-privileged caller → 403, tested), audited, and no
+      route returns a secret (only the opaque destination id / masked hint; `safety:no-secret-reads` green).
+- [x] **Second provider (Moyasar)** passes the same adversarial battery: verify-by-fetch, wrong secret_token
+      refused WITHOUT a fetch, malformed-id guard, minor-unit split integrity.
+- [x] **Cross-tenant isolation**: a split routes only to the tenant's OWN active destination; sub-merchant
+      keys are length-prefixed (no "*"/cross-tenant); payout is platform-level. Tested.
+- [x] Attacker-mindset + bug tests (52 Phase 2 tests); full suite 699 + 55 fleet gates green; OpenAPI checked.
 - [ ] Attacker-mindset security tests **+** bug/edge tests; full suite + fleet gates green; OpenAPI checked.
 
 ---

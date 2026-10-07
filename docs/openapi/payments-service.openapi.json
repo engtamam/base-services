@@ -161,6 +161,37 @@
         "title": "OptionIn",
         "type": "object"
       },
+      "PaymentModeIn": {
+        "properties": {
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          },
+          "locked": {
+            "default": false,
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "mode": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Mode",
+            "type": "string"
+          },
+          "tenant": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Tenant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "PaymentModeIn",
+        "type": "object"
+      },
       "SecretIn": {
         "properties": {
           "name": {
@@ -820,6 +851,94 @@
         ]
       }
     },
+    "/api/v1/app/operator/payment-mode": {
+      "get": {
+        "description": "The effective single-select payment model for a scope (which linking method its payments use).",
+        "operationId": "get_payment_mode_api_v1_app_operator_payment_mode_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Tenant",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Payment Mode Api V1 App Operator Payment Mode Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Payment Mode",
+        "tags": [
+          "operator"
+        ]
+      },
+      "put": {
+        "description": "Select a tenant's one active payment model, or force one platform-wide. Exactly-one; audited.",
+        "operationId": "set_payment_mode_api_v1_app_operator_payment_mode_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PaymentModeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Payment Mode Api V1 App Operator Payment Mode Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Payment Mode",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
     "/api/v1/app/operator/secrets": {
       "get": {
         "description": "Which credentials are set, and a four-character hint for each.\n\nThere is no value in this response and no route that would return one. The hint exists so an\noperator can tell which key is loaded before replacing it \u2014 replacing the wrong one is the\nmistake this prevents.",
@@ -958,6 +1077,51 @@
           }
         },
         "summary": "Clear Secret",
+        "tags": [
+          "operator"
+        ]
+      }
+    },
+    "/api/v1/app/operator/sub-merchants/{tenant}": {
+      "get": {
+        "description": "A tenant's sub-merchant onboarding status + destination id (an opaque provider id \u2014 never a bank\ndetail, so nothing sensitive is exposed here).",
+        "operationId": "view_submerchant_api_v1_app_operator_sub_merchants__tenant__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant",
+            "required": true,
+            "schema": {
+              "title": "Tenant",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response View Submerchant Api V1 App Operator Sub Merchants  Tenant  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View Submerchant",
         "tags": [
           "operator"
         ]

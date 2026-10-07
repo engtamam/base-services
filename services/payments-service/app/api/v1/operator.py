@@ -24,7 +24,9 @@ from app.api.authz import require_capability
 from app.api.ratelimit import rate_limit
 from app.config import get_settings
 from app.core.option_gate import OptionGate, OptionGateError
+from app.core.payment_mode import PaymentModeError, PaymentModeGate
 from app.core.pii import subject_ref
+from app.core.submerchant import SubMerchantStore
 from app.core.runtime_config import RuntimeConfig, RuntimeConfigError
 from app.core.secret_store import SecretError, SecretStore
 
@@ -253,3 +255,56 @@ async def clear_option(request: Request, option: str, tenant: str = "", force: b
     except OptionGateError as exc:
         return _refuse(str(exc))
     return {"cleared": cleared}
+
+
+# ── marketplace: payment mode + sub-merchant view (human operator panel) ────────────
+def _mode_gate(request: Request) -> PaymentModeGate:
+    return PaymentModeGate(request.app.state.container.datastore)
+
+
+def _submerchants(request: Request) -> SubMerchantStore:
+    return SubMerchantStore(request.app.state.container.datastore)
+
+
+class PaymentModeIn(BaseModel):
+    mode: str = Field(..., min_length=1, max_length=32)       # conduit | marketplace
+    tenant: str = Field(default="", max_length=128)           # "" = platform force/default
+    locked: bool = False
+    force: bool = False
+
+
+@router.get("/payment-mode", dependencies=[Depends(_CONFIG), Depends(rate_limit)])
+async def get_payment_mode(request: Request, tenant: str = "",
+                           principal: Principal = Depends(require_user)) -> dict:
+    """The effective single-select payment model for a scope (which linking method its payments use)."""
+    st = await _mode_gate(request).status(tenant=tenant)
+    return {"mode": st.mode, "locked": st.locked, "source": st.source}
+
+
+@router.put("/payment-mode", dependencies=[Depends(_CONFIG), Depends(rate_limit)])
+async def set_payment_mode(request: Request, body: PaymentModeIn,
+                           principal: Principal = Depends(require_user)) -> dict:
+    """Select a tenant's one active payment model, or force one platform-wide. Exactly-one; audited."""
+    await request.app.state.auditor.record(
+        "operator.payment_mode_changed", actor=_actor(principal), tenant=body.tenant or "",
+        resource=f"payment_mode:{body.tenant or 'platform'}",
+        ip=request.client.host if request.client else "",
+        metadata={"mode": body.mode, "locked": body.locked})
+    try:
+        st = await _mode_gate(request).set(tenant=body.tenant, mode=body.mode, locked=body.locked,
+                                           actor_ref=_actor(principal), force=body.force)
+    except PaymentModeError as exc:
+        return _refuse(str(exc))
+    return {"mode": st.mode, "locked": st.locked, "source": st.source}
+
+
+@router.get("/sub-merchants/{tenant}", dependencies=[Depends(_CONFIG), Depends(rate_limit)])
+async def view_submerchant(request: Request, tenant: str,
+                           principal: Principal = Depends(require_user)) -> dict:
+    """A tenant's sub-merchant onboarding status + destination id (an opaque provider id — never a bank
+    detail, so nothing sensitive is exposed here)."""
+    m = await _submerchants(request).get(tenant)
+    if m is None:
+        return {"tenant": tenant, "status": "none", "destination_id": ""}
+    return {"tenant": m.tenant, "provider": m.provider, "status": m.status,
+            "destination_id": m.destination_id}

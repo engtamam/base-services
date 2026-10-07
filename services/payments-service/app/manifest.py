@@ -92,6 +92,9 @@ def build_manifest(
             {"path": "/api/v1/app/operator/options", "tier": "user", "method": "GET"},
             {"path": "/api/v1/app/operator/options", "tier": "user", "method": "PUT"},
             {"path": "/api/v1/app/operator/options/{}", "tier": "user", "method": "DELETE"},
+            {"path": "/api/v1/app/operator/payment-mode", "tier": "user", "method": "GET"},
+            {"path": "/api/v1/app/operator/payment-mode", "tier": "user", "method": "PUT"},
+            {"path": "/api/v1/app/operator/sub-merchants/{}", "tier": "user", "method": "GET"},
             # PUBLIC (unauthenticated by design): the hosted pay-link redirector the customer's browser
             # follows, and the gateway's server-to-server webhook (adapter-verified, tenant in the path).
             {"path": "/api/v1/payments/pay/{}", "tier": "public", "method": "GET"},

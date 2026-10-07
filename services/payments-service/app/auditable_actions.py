@@ -153,6 +153,15 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "log is down would strand the option in its current state, which protects nothing",
     },
     {
+        "action": "operator.payment_mode_changed",
+        "source": "admin",
+        "critical": False,
+        "resource": "payment_mode",
+        "why": "an operator selecting a tenant's payment model (conduit vs marketplace), or forcing one "
+               "platform-wide, changes how its payments are routed; the history explains the routing in "
+               "effect at a point in time. Not critical: a down log must not strand the current selection",
+    },
+    {
         "action": "payments.merchant_credential_set",
         "source": "internal",
         "critical": True,
