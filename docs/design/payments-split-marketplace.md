@@ -276,31 +276,32 @@ release (v0.25 patch).
 - [x] Event topic catalogue (`EMITTED`) is an immutable tuple; re-export unchanged.
 - [x] Attacker-mindset security tests **+** bug/edge tests written; full service suite + all fleet gates
       green; OpenAPI `--check` unchanged.
- — Marketplace capability + first provider adapter (ships OFF)
+### ◐ Phase 1 — Marketplace capability + first provider adapter (code-complete; release held)
 
-- [ ] **`MarketplaceGateway` Protocol** — `onboard_merchant()`, `prepare_split_checkout(destinations=[...])`,
-      `fetch_payout_status()` (+ `verify_webhook` for payout/onboarding where the provider signs).
-- [ ] **Platform-scoped marketplace credential store** — separate collection + salt; write-only;
-      boot guard conditioned on the marketplace model being enabled.
-- [ ] **Sub-merchant mapping store** — `tenant → provider destination id` (+ onboarding status). Supports
-      BOTH onboarding modes: `api` (a new internal route forwards KYB data to the provider, stores only the
-      returned id) and `hosted` (the provider's embedded flow, e.g. Tap JS Connect, posts to the provider
-      directly; we store only the id/status from the callback — never the documents).
-- [ ] **First adapter — Tap** (leans Tap: supports `onboarding={api, hosted}` via JS Connect, the
-      lower-liability path). Verify the current first-party API at build time; save a dated reference under
-      `docs/integrations/`, like the TuwaiqPay one. Declares
-      `model=marketplace, capabilities={onboarding, split, payout}, onboarding={api, hosted}`.
-- [ ] **Split record + validation** — `sum(destinations)+fee == amount` fail-closed; server-authoritative.
-- [ ] **Mode-selection primitive (single-select, deferred from Phase 0)** — the per-tenant "selected
-      payment mode" store (one value from an allowed set + platform lock + curated menu), modelled on
-      `OptionGate`. Now it has a real enforcement reader: `create_link` resolves the tenant's selected
-      mode and routes to that model's resolver. Exactly-one semantics; `conduit` stays the default so
-      existing tenants are unaffected.
-- [ ] **`marketplace` as a selectable mode** — added to the mode-selection menu, shipped so no platform
-      offers it until it opts in; a tenant can select it only where the platform offers it; lockable.
-- [ ] **Events** — `merchant.onboarding_updated`, `payout.settled`, `payout.failed`.
-- [ ] **Deep tests** — onboarding happy/invalid; split sums; split-checkout mint; webhook verify + idempotent
-      apply; capability refusal when the active model/provider lacks `split`; OFF-by-default proven.
+Code-complete on the phase branch (commits 1a/1b/1c/1d); NO release yet (per the hold-all-releases
+directive). 106 Phase 1 tests; full suite + 55 fleet gates green; OpenAPI regenerated.
+
+- [x] **`MarketplaceGateway` Protocol** — `prepare_split_checkout()`, `verify_webhook()`, `fetch_status()`,
+      `onboard_merchant()`, `fetch_payout_status()` + SplitDestination/OnboardResult/PayoutStatus.
+- [x] **Platform-scoped marketplace credential store** — separate collection + salt; write-only; a
+      write route (`/internal/payments/marketplace-credentials`). (No separate boot flag: marketplace is
+      "enabled" iff provider+key are set — `configured()` fail-closed — so there is no unread flag.)
+- [x] **Sub-merchant mapping store** — `tenant → provider destination id` (+ onboarding status), ACTIVE-
+      gated. `api` onboarding forwards KYB and stores only the returned id; `hosted` returns a handle and
+      the destination lands via `/sub-merchants/destination`. Never stores the IBAN/documents.
+- [x] **First adapter — Tap** — split charge (destinations in major units), verify-by-fetch + timing-safe
+      hashstring, onboarding (api/hosted), payout status; dated reference in `docs/integrations/`.
+      Declares `model=marketplace, capabilities={checkout, onboarding, split, payout}, onboarding={api, hosted}`.
+- [x] **Split record + validation** — server-authoritative `plan_split`; `sum(shares) ≤ total`, platform
+      fee = remainder; fail-closed on every hostile shape.
+- [x] **Mode-selection primitive (single-select)** — `PaymentModeGate` + `/internal/payments/payment-mode`;
+      `create_link` resolves the mode and routes conduit vs marketplace; conduit default = unchanged.
+- [x] **`marketplace` as a selectable mode** — selectable only where configured; platform force/lock; OFF
+      until a platform sets a provider + a tenant's mode.
+- [~] **Events** — `merchant.onboarding_updated` shipped; `payout.settled`/`payout.failed` move to Phase 2
+      with the payout reconcile sweep that emits them.
+- [x] **Deep tests** — onboarding happy/invalid, split sums, split-checkout mint, webhook verify +
+      forged/unsigned/unreachable, capability + mode refusals, cross-tenant isolation, OFF-by-default.
 
 **DoD (plan PAST the checklist):** onboarding/split/webhook are hot paths — no blocking I/O on the loop
 (mirror `asyncio.to_thread` offload used for the gateway HTTP); no unwired config knob (every new setting is
@@ -309,23 +310,26 @@ write-ahead on onboarding + split-create + payout settle, bounded/paged payout r
 check. One release.
 
 **🔒 Security hardening — attacker-mindset, CHECK each (≥50 tests, all green):**
-- [ ] **Webhook verification**: HMAC-SHA256 over the **raw body**, `hmac.compare_digest` (timing-safe),
-      **300s** timestamp tolerance, replay dedup on `event_id`, dual-secret during rotation, reject on a
-      missing/invalid signature (no "log & continue"); an **unsigned** provider → verify-by-fetch.
-      Tested with a **forged** signature, a **replayed** old event, and a **tampered** payload.
-- [ ] **Split integrity**: server computes the split; `sum(destinations)+fee == amount` **fail-closed**;
-      a browser/caller-supplied split that does not reconcile is refused. Tested with a tampered split.
-- [ ] **Secrets**: platform-marketplace keys in a **separate sealed store** (own salt), **write-only**,
-      never logged/echoed, envelope-encrypted, rotation + overlap; boot guard when marketplace enabled.
-      Tested that no route returns a secret and none appears in logs/events.
-- [ ] **SSRF**: provider base is https + allowlist, validated at **write and read**. Tested with a
-      private/internal/non-https base.
-- [ ] **PII minimisation**: store only the provider destination id, **never raw IBAN/documents**; hosted
-      onboarding (mode B) preferred. Tested that KYB docs never land in our store in mode B.
-- [ ] **Idempotency**: every money op (split-checkout, payout settle) is idempotent via the CAS claim.
-      Tested with a duplicate/concurrent replay → one effect.
-- [ ] **Audit**: write-ahead on credential set, onboarding, split-create, payout settle.
-- [ ] Attacker-mindset security tests **+** bug/edge tests; full suite + fleet gates green; OpenAPI checked.
+- [x] **Webhook verification**: trust anchor = **verify-by-fetch** (re-fetch the charge); a present-but-wrong
+      hashstring is refused `hmac.compare_digest` timing-safe WITHOUT a fetch; an unsigned webhook verifies
+      by fetch; replay is absorbed by the idempotent `apply_outcome` CAS. Tested forged / unsigned /
+      unreachable. (Tap's hashstring field order/header + a timestamp-tolerance window stay CONFIRM-at-build;
+      verify-by-fetch is the stronger anchor meanwhile.)
+- [x] **Split integrity**: server computes the split; `sum(shares) ≤ total`, fee = remainder, **fail-closed**;
+      hostile shapes (dupe/negative/bool/non-int/over-total) refused → nothing minted. Tested.
+- [x] **Secrets**: platform-marketplace keys in a **separate sealed store** (own salt = crypto isolation),
+      **write-only** (hint only), envelope-encrypted, rotation+overlap. Tested: no route returns a value, a
+      relocated merchant blob fails the GCM tag.
+- [x] **SSRF**: provider base is https + non-private, validated at **write and read**. Tested with
+      non-https / private / loopback IP-literal bases.
+- [x] **PII minimisation**: store only the provider destination id, **never raw IBAN/documents**; the
+      onboarding event carries no KYB/PII. Tested.
+- [x] **Idempotency**: create is claim-guarded; the marketplace webhook settles through the same idempotent
+      `apply_outcome` CAS as conduit (one completion, replay-safe). Tested.
+- [x] **Audit**: write-ahead on marketplace-credential set/clear, sub-merchant onboard/destination, mode
+      set; split-create via `request_created`. (Payout-settle audit lands with Phase 2 payout reconcile.)
+- [x] Attacker-mindset security tests **+** bug/edge tests (106 Phase 1 tests); full suite + 55 fleet gates
+      green; OpenAPI checked.
 
 ### ☐ Phase 2 — Second provider + payout reconciliation + operator surface
 

@@ -384,6 +384,9 @@ class Settings(BaseSettings):
     # person, or import a backup over live data (payments-008).
     _DESTRUCTIVE_INTERNAL_ROUTES = (
         "/internal/payments/merchant-credentials",
+        # Platform marketplace credentials decide where EVERY sub-merchant split is routed + the key that
+        # authorises it — the highest-blast-radius money-path write in the service.
+        "/internal/payments/marketplace-credentials",
         # Sub-merchant onboarding/destination set a shop's PAYOUT TARGET — money-routing, same class as a
         # credential write, so they must name their caller in production (not just hold the flat token).
         "/internal/payments/sub-merchants/onboard",

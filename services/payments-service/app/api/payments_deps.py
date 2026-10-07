@@ -62,7 +62,7 @@ def build_mode_gate(request: Request) -> PaymentModeGate:
     return PaymentModeGate(request.app.state.container.datastore)
 
 
-def build_marketplace_secrets(request: Request, settings: Settings | None = None):
+def build_marketplace_secrets(request: Request, settings: Settings | None = None):  # noqa: D401
     settings = settings or get_settings()
     return marketplace_secret_store(
         request.app.state.container.datastore, settings.SECRETS_KEK,

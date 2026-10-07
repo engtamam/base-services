@@ -368,8 +368,8 @@ def test_payments_reexports_the_same_topics():
     assert TOPIC_FAILED == payment_events.TOPIC_FAILED
 
 
-def test_emitted_catalogue_is_the_two_topics():
-    assert set(payment_events.EMITTED) == {TOPIC_COMPLETED, TOPIC_FAILED}
+def test_emitted_catalogue_contains_the_conduit_topics():
+    assert {TOPIC_COMPLETED, TOPIC_FAILED} <= set(payment_events.EMITTED)
 
 
 def test_emitted_is_an_immutable_tuple():

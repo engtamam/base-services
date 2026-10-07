@@ -188,6 +188,32 @@ AUDITABLE_ACTIONS: list[dict[str, Any]] = [
                "action and must be attributable to whoever triggered it (payments-013)",
     },
     {
+        "action": "payments.marketplace_credential_set",
+        "source": "internal",
+        "critical": True,
+        "resource": "marketplace_credential",
+        "why": "the platform MARKETPLACE_* credentials route EVERY sub-merchant split and hold the key "
+               "that authorises the charge — the widest-blast-radius money-path change in the service, so "
+               "setting one must be attributable and cannot proceed unrecorded. The value is never logged",
+    },
+    {
+        "action": "payments.marketplace_credential_cleared",
+        "source": "internal",
+        "critical": True,
+        "resource": "marketplace_credential",
+        "why": "clearing a marketplace credential disables or reroutes the platform's split payments; like "
+               "setting one it is a money-path change that must be attributable and cannot proceed unrecorded",
+    },
+    {
+        "action": "payments.payment_mode_set",
+        "source": "internal",
+        "critical": False,
+        "resource": "payment_mode",
+        "why": "selecting a tenant's payment model (conduit vs marketplace), or forcing one platform-wide, "
+               "changes how its payments are routed; recording who set which mode keeps the routing "
+               "decision attributable. Not critical: a down log must not strand the current selection",
+    },
+    {
         "action": "payments.submerchant_onboarded",
         "source": "internal",
         "critical": True,

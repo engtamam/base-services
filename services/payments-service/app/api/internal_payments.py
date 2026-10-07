@@ -15,15 +15,37 @@ from starlette.responses import JSONResponse
 
 from app.adapters.payment_http import validate_gateway_base
 from app.api.internal import require_internal_token
-from app.api.payments_deps import (build_marketplace_gateways, build_merchant_secrets,
-                                   build_payment_service, build_submerchants)
+from app.api.payments_deps import (build_marketplace_gateways, build_marketplace_secrets,
+                                   build_merchant_secrets, build_mode_gate, build_payment_service,
+                                   build_submerchants)
 from app.core.currency import SUPPORTED_CURRENCIES
+from app.core.marketplace_credentials import API_BASE as MKT_API_BASE
+from app.core.marketplace_credentials import SETTABLE_NAMES as MKT_SETTABLE_NAMES
 from app.core.merchant_credentials import API_BASE, SETTABLE_NAMES
 from app.core.payments import (GatewayUnavailable, PaymentNotConfigured, PaymentsDisabled,
                                RequestConflict)
+from app.core.payment_events import TOPIC_ONBOARDING_UPDATED
+from app.core.payment_mode import ModeLocked, PaymentModeError, UnknownMode
 from app.core.secret_store import SecretError
 from app.core.submerchant import SubMerchantError
+from app.ports.event_bus import Event
 from app.ports.payment_gateway import CAP_ONBOARDING, ONBOARDING_MODES, capabilities_of, onboarding_modes_of
+
+
+async def _emit_onboarding_updated(request: Request, *, tenant: str, status: str,
+                                   destination_id: str, provider: str) -> None:
+    """Publish merchant.onboarding_updated (a hint — carries NO KYB/PII). Never raises: a dropped hint
+    must not fail an onboarding that already happened."""
+    bus = getattr(request.app.state.container, "event_bus", None)
+    if bus is None:
+        return
+    try:
+        await bus.publish(TOPIC_ONBOARDING_UPDATED, Event(
+            type=TOPIC_ONBOARDING_UPDATED,
+            payload={"tenant": tenant, "status": status, "has_destination": bool(destination_id),
+                     "provider": provider}))
+    except Exception:   # noqa: BLE001 — a hint is best-effort
+        pass
 
 router = APIRouter(prefix="/internal/payments", tags=["internal-payments"])
 
@@ -103,6 +125,59 @@ async def list_credentials(request: Request, tenant: str) -> dict:
     secrets = build_merchant_secrets(request)
     infos = await secrets.list_info(tenant=tenant)
     return {"tenant": tenant, "credentials": [
+        {"name": i.name, "hint": i.hint, "set_at": i.set_at, "rotating": i.rotating} for i in infos]}
+
+
+# ── marketplace credentials (platform-scoped, write-only) ──────────────────────────
+class _MktCredIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    value: str = Field(min_length=1, max_length=4096)
+    actor_ref: str = Field(default="", max_length=128)
+
+
+class _MktCredKey(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/marketplace-credentials", dependencies=[Depends(require_internal_token)])
+async def set_marketplace_credential(request: Request, body: _MktCredIn) -> dict:
+    """Seal one MARKETPLACE_* credential for the PLATFORM (the marketplace account the whole platform
+    shares). Write-only — returns a masked hint, never the value. Audited write-ahead, critical: these
+    decide where every sub-merchant split is routed and the key that authorises it."""
+    if body.name not in MKT_SETTABLE_NAMES:
+        return JSONResponse(
+            {"ok": False, "reason": f"unknown credential name; allowed: {list(MKT_SETTABLE_NAMES)}"},
+            status_code=422)
+    if body.name == MKT_API_BASE:
+        ok, reason = validate_gateway_base(body.value)
+        if not ok:
+            return JSONResponse({"ok": False, "reason": reason}, status_code=422)
+    await request.app.state.auditor.record(
+        "payments.marketplace_credential_set", actor=body.actor_ref or "service:internal", tenant="",
+        resource=f"marketplace_credential:{body.name}",
+        ip=request.client.host if request.client else "")
+    secrets = build_marketplace_secrets(request)
+    try:
+        info = await secrets.set(tenant="", name=body.name, value=body.value, actor_ref=body.actor_ref)
+    except SecretError as exc:
+        return JSONResponse({"ok": False, "reason": str(exc)}, status_code=422)
+    return {"ok": True, "name": info.name, "hint": info.hint, "rotating": info.rotating}
+
+
+@router.post("/marketplace-credentials/clear", dependencies=[Depends(require_internal_token)])
+async def clear_marketplace_credential(request: Request, body: _MktCredKey) -> dict:
+    await request.app.state.auditor.record(
+        "payments.marketplace_credential_cleared", actor="service:internal", tenant="",
+        resource=f"marketplace_credential:{body.name}",
+        ip=request.client.host if request.client else "")
+    return {"ok": True, "cleared": await build_marketplace_secrets(request).clear(tenant="", name=body.name)}
+
+
+@router.get("/marketplace-credentials", dependencies=[Depends(require_internal_token)])
+async def list_marketplace_credentials(request: Request) -> dict:
+    """Hints only — which MARKETPLACE_* names are set, masked. No values ever."""
+    infos = await build_marketplace_secrets(request).list_info(tenant="")
+    return {"credentials": [
         {"name": i.name, "hint": i.hint, "set_at": i.set_at, "rotating": i.rotating} for i in infos]}
 
 
@@ -269,6 +344,9 @@ async def onboard_submerchant(request: Request, body: _OnboardIn) -> dict:
                 destination_id=result.destination_id, status=result.status, actor_ref=body.actor_ref)
         except SubMerchantError as exc:
             return JSONResponse({"ok": False, "reason": str(exc)}, status_code=422)
+    await _emit_onboarding_updated(
+        request, tenant=body.tenant, status=result.status,
+        destination_id=result.destination_id, provider=result.provider or getattr(gw, "driver", ""))
     return {"ok": True, **result.to_dict()}
 
 
@@ -290,6 +368,8 @@ async def set_submerchant_destination(request: Request, body: _SetDestinationIn)
             status=body.status, actor_ref=body.actor_ref)
     except SubMerchantError as exc:
         return JSONResponse({"ok": False, "reason": str(exc)}, status_code=422)
+    await _emit_onboarding_updated(request, tenant=m.tenant, status=m.status,
+                                   destination_id=m.destination_id, provider=m.provider)
     return {"ok": True, "tenant": m.tenant, "status": m.status, "destination_id": m.destination_id}
 
 
@@ -302,3 +382,39 @@ async def get_submerchant(request: Request, tenant: str) -> dict:
         return {"ok": True, "tenant": tenant, "status": "none", "destination_id": ""}
     return {"ok": True, "tenant": m.tenant, "provider": m.provider, "status": m.status,
             "destination_id": m.destination_id}
+
+
+# ── payment mode (single-select) ───────────────────────────────────────────────────
+class _ModeIn(BaseModel):
+    tenant: str = Field(default="", max_length=128)      # "" = the platform scope (force/default a mode)
+    mode: str = Field(min_length=1, max_length=32)       # conduit | marketplace
+    locked: bool = False
+    force: bool = False
+    actor_ref: str = Field(default="", max_length=128)
+
+
+@router.post("/payment-mode", dependencies=[Depends(require_internal_token)])
+async def set_payment_mode(request: Request, body: _ModeIn) -> dict:
+    """Select a tenant's ONE active payment model (or, for tenant="", the platform force/default). Exactly
+    -one; an unknown mode is refused and a locked scope needs force. Audited."""
+    await request.app.state.auditor.record(
+        "payments.payment_mode_set", actor=body.actor_ref or "service:internal", tenant=body.tenant or "",
+        resource=f"payment_mode:{body.tenant or 'platform'}",
+        ip=request.client.host if request.client else "", metadata={"mode": body.mode, "locked": body.locked})
+    try:
+        st = await build_mode_gate(request).set(
+            tenant=body.tenant, mode=body.mode, locked=body.locked, actor_ref=body.actor_ref,
+            force=body.force)
+    except UnknownMode as exc:
+        return JSONResponse({"ok": False, "reason": str(exc)}, status_code=422)
+    except ModeLocked as exc:
+        return JSONResponse({"ok": False, "reason": str(exc), "code": "LOCKED"}, status_code=409)
+    except PaymentModeError as exc:
+        return JSONResponse({"ok": False, "reason": str(exc)}, status_code=422)
+    return {"ok": True, "tenant": body.tenant, "mode": st.mode, "locked": st.locked, "source": st.source}
+
+
+@router.get("/payment-mode", dependencies=[Depends(require_internal_token)])
+async def get_payment_mode(request: Request, tenant: str = "") -> dict:
+    st = await build_mode_gate(request).status(tenant=tenant)
+    return {"ok": True, "tenant": tenant, "mode": st.mode, "locked": st.locked, "source": st.source}

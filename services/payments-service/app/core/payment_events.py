@@ -14,13 +14,16 @@ from __future__ import annotations
 TOPIC_COMPLETED = "payment.completed"
 TOPIC_FAILED = "payment.failed"
 
-# Marketplace lifecycle — reserved for Phase 1+ (declared here when their emitters land, so the
-# catalogue stays the single source of truth):
-#   TOPIC_ONBOARDING_UPDATED = "merchant.onboarding_updated"
-#   TOPIC_PAYOUT_SETTLED     = "payout.settled"
-#   TOPIC_PAYOUT_FAILED      = "payout.failed"
+# Marketplace lifecycle.
+# A sub-merchant's onboarding status changed (registered / approved / rejected) — a consumer uses it to
+# prompt the shop ("finish verification", "you can now receive payouts"). Carries NO KYB/PII, only the
+# tenant, the new status, and whether a payout destination is now on file.
+TOPIC_ONBOARDING_UPDATED = "merchant.onboarding_updated"
+# Payout (settlement) outcomes — reserved for Phase 2 with the payout reconcile sweep that emits them:
+#   TOPIC_PAYOUT_SETTLED = "payout.settled"
+#   TOPIC_PAYOUT_FAILED  = "payout.failed"
 
 # The full set this service may publish — one declared catalogue (mirrors billing-service's EMITTED).
-EMITTED = (TOPIC_COMPLETED, TOPIC_FAILED)
+EMITTED = (TOPIC_COMPLETED, TOPIC_FAILED, TOPIC_ONBOARDING_UPDATED)
 
-__all__ = ["TOPIC_COMPLETED", "TOPIC_FAILED", "EMITTED"]
+__all__ = ["TOPIC_COMPLETED", "TOPIC_FAILED", "TOPIC_ONBOARDING_UPDATED", "EMITTED"]

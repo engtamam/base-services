@@ -19,6 +19,7 @@ def test_boot_guard_refuses_prod_with_merchant_credentials_default_open():
 
 def test_boot_guard_passes_when_declared():
     pol = ('{"/internal/payments/merchant-credentials": ["operations"], '
+           '"/internal/payments/marketplace-credentials": ["operations"], '
            '"/internal/payments/sub-merchants/onboard": ["operations"], '
            '"/internal/payments/sub-merchants/destination": ["operations"], '
            '"/internal/privacy/erase": ["compliance-service"], '
