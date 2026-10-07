@@ -11,6 +11,12 @@ _MSG = ("no payment gateway is configured for this tenant — set the shop's MER
 
 class NullGateway:
     driver = "null"
+    # Declares NO model and NO capabilities on purpose: an unconfigured/unknown tenant resolves here,
+    # and the core's capability assertion then refuses every op with a clear reason rather than the
+    # null quietly accepting it. Fail-closed, consistent with every method below.
+    model = ""
+    capabilities: frozenset[str] = frozenset()
+    onboarding_modes: frozenset[str] = frozenset()
 
     def __init__(self, **_) -> None:
         pass

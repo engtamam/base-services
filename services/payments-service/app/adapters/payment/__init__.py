@@ -29,3 +29,20 @@ def build_gateway(driver: str, config: dict[str, Any] | None = None) -> PaymentG
     tenant refuses payments with a clear reason instead of 500-ing the whole route."""
     cls = _REGISTRY.get((driver or "").strip().lower(), NullGateway)
     return cls(**(config or {}))
+
+
+def describe_drivers() -> list[dict[str, Any]]:
+    """[{driver, model, capabilities, onboarding_modes}] read off each selectable adapter's DECLARED
+    class metadata — the menu a platform picks from, and what the service manifest/operator surface can
+    advertise. Mirrors Container.describe(): the registry is the single source of truth for what exists.
+    Read from the class (not an instance) so it needs no credentials to enumerate."""
+    out: list[dict[str, Any]] = []
+    for driver in SELECTABLE_DRIVERS:
+        cls = _REGISTRY[driver]
+        out.append({
+            "driver": driver,
+            "model": getattr(cls, "model", "") or "",
+            "capabilities": sorted(getattr(cls, "capabilities", frozenset()) or ()),
+            "onboarding_modes": sorted(getattr(cls, "onboarding_modes", frozenset()) or ()),
+        })
+    return out

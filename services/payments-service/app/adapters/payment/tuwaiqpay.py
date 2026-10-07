@@ -26,8 +26,8 @@ from urllib.parse import quote
 
 from app.adapters.payment_http import bearer, get_json, post_json
 from app.core.currency import to_major, to_minor
-from app.ports.payment_gateway import (CANCELLED, FAILED, PENDING, SUCCEEDED, CheckoutSession,
-                                       GatewayUnavailable, PaymentOutcome)
+from app.ports.payment_gateway import (CANCELLED, CAP_CHECKOUT, FAILED, MODEL_CONDUIT, PENDING,
+                                       SUCCEEDED, CheckoutSession, GatewayUnavailable, PaymentOutcome)
 
 # L5: PENDING_SETTLEMENT is deliberately NOT paid. It means the gateway accepted the payment but has
 # not yet SETTLED/APPROVED it (capture pending); mapping it to SUCCEEDED would complete — and emit the
@@ -69,6 +69,11 @@ def _iso_currency(raw, fallback: str) -> str:
 
 class TuwaiqPayGateway:
     driver = "tuwaiqpay"
+    # A conduit gateway: the shop's own hosted-link gateway. It mints checkouts and nothing else —
+    # no sub-merchant onboarding, no split, no payout (those are the marketplace models).
+    model = MODEL_CONDUIT
+    capabilities = frozenset({CAP_CHECKOUT})
+    onboarding_modes: frozenset[str] = frozenset()
 
     def __init__(self, *, api_key: str = "", extra_secret: str = "", base: str = "",
                  timeout: int = 30, **_) -> None:

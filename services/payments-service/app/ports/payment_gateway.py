@@ -26,6 +26,69 @@ from app.ports.errors import PortError
 # Normalised payment statuses. "succeeded" is the only one that means money moved.
 SUCCEEDED, FAILED, CANCELLED, PENDING = "succeeded", "failed", "cancelled", "pending"
 
+# ── capability + model taxonomy (the extensibility contract) ──────────────────────
+# This is the vocabulary a multi-mode, multi-provider payments service is built on. It lives in the
+# port (not an adapter) so the core reasons about WHAT a gateway can do without importing any concrete
+# adapter — exactly as `driver` already lets the core name an adapter without knowing its class.
+#
+# A payment MODEL is how a payment is structured end to end:
+MODEL_CONDUIT = "conduit"          # the shop's OWN gateway; funds flow customer -> gateway -> shop (today)
+MODEL_MARKETPLACE = "marketplace"  # the platform's account; the provider splits + pays out to sub-merchants
+MODELS = frozenset({MODEL_CONDUIT, MODEL_MARKETPLACE})
+
+# A CAPABILITY is one operation an adapter can perform. An adapter DECLARES the set it supports, and the
+# core asserts the capability it needs BEFORE using it (fail-closed), so an unsupported op is a clear
+# refusal, never a half-done call.
+CAP_CHECKOUT = "checkout"          # mint a hosted pay-link (every gateway today)
+CAP_ONBOARDING = "onboarding"      # register a sub-merchant with the provider (marketplace)
+CAP_SPLIT = "split"                # split one payment across destinations + a platform fee (marketplace)
+CAP_PAYOUT = "payout"              # report/settle a sub-merchant payout (marketplace)
+CAPABILITIES = frozenset({CAP_CHECKOUT, CAP_ONBOARDING, CAP_SPLIT, CAP_PAYOUT})
+
+# An ONBOARDING MODE is how a merchant's KYB data reaches the provider (only meaningful for marketplace):
+ONBOARD_API = "api"                # we collect in our UI and forward via the provider API (mode A)
+ONBOARD_HOSTED = "hosted"          # the merchant submits KYC DIRECTLY to the provider (mode B, e.g. JS Connect)
+ONBOARDING_MODES = frozenset({ONBOARD_API, ONBOARD_HOSTED})
+
+
+def _as_str_set(val) -> frozenset[str]:
+    """Coerce a DECLARED metadata value into a clean set of strings, defensively and FAIL-CLOSED.
+
+    The declaration is trusted code, but a bug or a hand-rolled/misconfigured adapter must never widen
+    what the core will do:
+      * None / empty            -> frozenset()  (declares nothing; the core refuses the op it wanted)
+      * a bare str "checkout"   -> {"checkout"}  (NOT split into characters — the common mistake, handled)
+      * a set/list/tuple        -> its string elements
+      * anything non-iterable   -> frozenset()  (never raise on a capability lookup)
+    The one direction this never does is INVENT a capability, so a malformed declaration can only ever
+    make the core refuse more, never permit more."""
+    if not val:
+        return frozenset()
+    if isinstance(val, str):
+        return frozenset({val})
+    try:
+        return frozenset(str(x) for x in val)
+    except TypeError:
+        return frozenset()
+
+
+def capabilities_of(gateway) -> frozenset[str]:
+    """The capabilities an adapter DECLARES. getattr-with-default + defensive coercion so a gateway that
+    predates the declaration (or the fail-closed null, or a malformed declaration) simply advertises
+    nothing valid, rather than raising — the core then refuses the op it wanted, the safe direction."""
+    return _as_str_set(getattr(gateway, "capabilities", ()))
+
+
+def model_of(gateway) -> str:
+    """The payment model an adapter DECLARES ("" if it declares none or declares a non-string)."""
+    val = getattr(gateway, "model", "")
+    return val if isinstance(val, str) else ""
+
+
+def onboarding_modes_of(gateway) -> frozenset[str]:
+    """The onboarding modes an adapter DECLARES (empty for a conduit gateway, which has none)."""
+    return _as_str_set(getattr(gateway, "onboarding_modes", ()))
+
 
 class GatewayUnavailable(PortError):
     """The shop's gateway is unreachable or misconfigured — retryable (reconcile later). Distinct
@@ -68,6 +131,13 @@ class PaymentOutcome:
 @runtime_checkable
 class PaymentGateway(Protocol):
     driver: str
+    # The extensibility contract: every adapter declares its payment model + the capability set it
+    # supports (and, for a marketplace adapter, its onboarding modes). The core reads these to pick and
+    # assert behaviour without importing the concrete adapter. A conduit gateway declares
+    # model=MODEL_CONDUIT, capabilities={CAP_CHECKOUT}, onboarding_modes=frozenset().
+    model: str
+    capabilities: frozenset[str]
+    onboarding_modes: frozenset[str]
 
     def prepare_checkout(self, *, amount_minor: int, currency: str, reference: str,
                          return_url: str = "", metadata: dict | None = None) -> CheckoutSession:

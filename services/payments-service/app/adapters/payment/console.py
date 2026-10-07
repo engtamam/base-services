@@ -11,12 +11,17 @@ from __future__ import annotations
 import hmac
 import json
 
-from app.ports.payment_gateway import (CANCELLED, FAILED, PENDING, SUCCEEDED, CheckoutSession,
-                                        PaymentOutcome)
+from app.ports.payment_gateway import (CANCELLED, CAP_CHECKOUT, FAILED, MODEL_CONDUIT, PENDING,
+                                        SUCCEEDED, CheckoutSession, PaymentOutcome)
 
 
 class ConsoleGateway:
     driver = "console"
+    # The dev/test conduit double — same capability shape as a real conduit gateway, so capability
+    # assertions behave identically in tests and in production.
+    model = MODEL_CONDUIT
+    capabilities = frozenset({CAP_CHECKOUT})
+    onboarding_modes: frozenset[str] = frozenset()
 
     def __init__(self, *, link_base: str = "https://pay.example.test/checkout",
                  webhook_secret: str = "", **_) -> None:

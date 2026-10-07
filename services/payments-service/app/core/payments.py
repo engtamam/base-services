@@ -22,14 +22,15 @@ import logging
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from app.core.merchant_credentials import MerchantGateways
+from app.core.merchant_credentials import CredentialResolver
 from app.core.payment_requests import COMPLETED, EXPIRED, PaymentRequestStore
 from app.ports.event_bus import Event, EventBus
-from app.ports.payment_gateway import (CANCELLED, FAILED, PENDING, SUCCEEDED, GatewayUnavailable,
-                                       PaymentOutcome)
+from app.ports.payment_gateway import (CANCELLED, CAP_CHECKOUT, FAILED, PENDING, SUCCEEDED,
+                                       GatewayUnavailable, PaymentOutcome, capabilities_of)
 
-TOPIC_COMPLETED = "payment.completed"
-TOPIC_FAILED = "payment.failed"
+# Topics live in one catalogue (app.core.payment_events); re-exported here so existing imports
+# (`from app.core.payments import TOPIC_COMPLETED`) keep working unchanged.
+from app.core.payment_events import TOPIC_COMPLETED, TOPIC_FAILED  # noqa: E402,F401
 
 _log = logging.getLogger("app.payments")
 
@@ -79,7 +80,7 @@ class CreatedLink:
 
 
 class PaymentService:
-    def __init__(self, *, requests: PaymentRequestStore, gateways: MerchantGateways,
+    def __init__(self, *, requests: PaymentRequestStore, gateways: CredentialResolver,
                  event_bus: EventBus, redirect_base_url: str, allowed_hosts: frozenset[str],
                  link_ttl_seconds: int, is_enabled=None) -> None:
         self._req = requests
@@ -182,6 +183,15 @@ class PaymentService:
         if getattr(gateway, "driver", "null") == "null":
             await self._req.release_claim(tenant=tenant, reference=reference)
             raise PaymentNotConfigured(f"tenant {tenant!r} has no payment gateway configured")
+        # Fail-closed capability assertion (the extensibility contract): only mint a checkout on a
+        # gateway that DECLARES it can. Every conduit adapter declares CAP_CHECKOUT, so this never fires
+        # today — it is the seam that, once a marketplace adapter without a plain checkout exists, refuses
+        # a checkout against it clearly instead of making a half-supported call. The null gateway (which
+        # declares nothing) is already handled above, so this only ever sees a real adapter.
+        if CAP_CHECKOUT not in capabilities_of(gateway):
+            await self._req.release_claim(tenant=tenant, reference=reference)
+            raise PaymentNotConfigured(
+                f"tenant {tenant!r} gateway {getattr(gateway, 'driver', '')!r} does not support checkout")
         try:
             # OFFLOAD the blocking gateway HTTP off the event loop (payments-001): prepare_checkout
             # does a synchronous http.client round trip with a 30s timeout.

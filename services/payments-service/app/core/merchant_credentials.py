@@ -20,10 +20,29 @@ The credential NAMES a shop sets (via the write-only route):
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 from app.adapters.payment import SELECTABLE_DRIVERS, build_gateway
 from app.core.secret_store import SecretStore
 from app.ports.payment_gateway import PaymentGateway
+
+
+@runtime_checkable
+class CredentialResolver(Protocol):
+    """How a tenant's payment credentials become a ready gateway — the seam that lets the core stay
+    agnostic about HOW creds are sourced for a given payment model.
+
+    Today there is exactly ONE implementation, `MerchantGateways` (per-tenant sealed `MERCHANT_*`), and
+    the core depends on this Protocol, not the class. When the marketplace model arrives, a SECOND
+    implementation resolves platform-scoped marketplace creds + the tenant's sub-merchant id — WITHOUT
+    weakening MerchantGateways' strict per-tenant isolation (require_tenant=True, no "" fallback). The
+    conduit path is unchanged; this is a typing/abstraction seam, not a behaviour change."""
+
+    async def gateway_for(self, tenant: str) -> PaymentGateway: ...
+
+    async def driver_for(self, tenant: str) -> str: ...
+
+    async def configured(self, tenant: str) -> bool: ...
 
 MERCHANT_COLLECTION = "merchant_secrets"
 MERCHANT_SALT = b"merchant-payment-secrets-v1"
