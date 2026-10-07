@@ -214,18 +214,19 @@ class TapGateway:
 
     # ── payout ───────────────────────────────────────────────────────────────────
     def fetch_payout_status(self, *, payout_ref: str) -> PayoutStatus:
-        # UNVERIFIED (see docs/integrations/tap-marketplace-api-reference.md): list/download payout
-        # endpoints are confirmed; the single-payout GET /v2/payouts/{id} path is not confirmed in Tap's
-        # docs — confirm against the live /reference/payout + a sandbox account before GA.
+        # Retrieve a single payout via POST /v2/payouts/list with the id in the body — Tap exposes no
+        # GET /payouts/{id} (ref: developers.tap.company/reference/retrieve-a-payout + /reference/list-payouts).
         if not _ID_RE.match(payout_ref or ""):
             raise GatewayUnavailable("Tap: malformed payout id")
-        ref = quote(payout_ref, safe="")
-        code, resp = get_json(f"{self._base}/payouts/{ref}", self._headers(), timeout=self._timeout)
+        code, resp = post_json(f"{self._base}/payouts/list", {"payout_id": payout_ref},
+                               self._headers(), timeout=self._timeout)
         if code == 0:
             raise GatewayUnavailable("Tap unreachable (payout)")
         data = resp if isinstance(resp, dict) else {}
-        cur = str(data.get("currency", "")).upper()
-        return PayoutStatus(status=_norm_payout(str(data.get("status", ""))), provider=self.driver,
-                            payout_ref=str(data.get("id", payout_ref)),
-                            amount_minor=to_minor(data.get("amount", 0) or 0, cur) if cur else 0,
-                            currency=cur, verified=True, raw={"status": data.get("status", "")})
+        rows = data.get("payouts") or data.get("_list") or (resp if isinstance(resp, list) else [])
+        row = next((r for r in rows if str(r.get("id", "")) == payout_ref), rows[0] if rows else {})
+        cur = str(row.get("currency", "")).upper()
+        return PayoutStatus(status=_norm_payout(str(row.get("status", ""))), provider=self.driver,
+                            payout_ref=str(row.get("id", payout_ref)),
+                            amount_minor=to_minor(row.get("amount", 0) or 0, cur) if cur else 0,
+                            currency=cur, verified=True, raw={"status": row.get("status", "")})

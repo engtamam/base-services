@@ -154,10 +154,9 @@ def test_moyasar_full_split_lifecycle_token_webhook(client, monkeypatch):
     _cred(client, "MARKETPLACE_SECRET_KEY", "sk_live_moy")
     _cred(client, "MARKETPLACE_WEBHOOK_SECRET", "whsec_moy")
 
-    # onboard (api → entity, immediate active recipient id)
-    r = client.post("/internal/payments/sub-merchants/onboard", headers=_h(),
-                    json={"tenant": "shop", "mode": "api", "data": {"name": "Shop"}})
-    assert r.status_code == 200 and r.json()["destination_id"].startswith("ent_")
+    # Moyasar recipients are created in its dashboard (no API) — record the destination directly.
+    client.post("/internal/payments/sub-merchants/destination", headers=_h(),
+                json={"tenant": "shop", "destination_id": "ent_shop", "status": "active"})
     client.post("/internal/payments/payment-mode", headers=_h(), json={"tenant": "shop", "mode": "marketplace"})
 
     completed = _events(client, "payment.completed")

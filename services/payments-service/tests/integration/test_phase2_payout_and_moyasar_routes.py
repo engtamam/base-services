@@ -58,9 +58,9 @@ def _set_provider(client, provider):
 # ── payout webhook route ────────────────────────────────────────────────────────
 def test_payout_webhook_applies_via_fetch(client, monkeypatch):
     _set_provider(client, "tap")
-    monkeypatch.setattr(tap, "get_json",
-                        lambda *a, **k: (200, {"id": "po_1", "status": "PAID_OUT", "amount": 50.0,
-                                               "currency": "SAR"}))
+    monkeypatch.setattr(tap, "post_json",
+                        lambda *a, **k: (200, {"payouts": [{"id": "po_1", "status": "PAID_OUT",
+                                                            "amount": 50.0, "currency": "SAR"}]}))
     events = []
 
     async def collect(ev):
@@ -80,7 +80,7 @@ def test_payout_webhook_no_id_applies_nothing(client):
 
 def test_payout_webhook_unreachable_asks_retry(client, monkeypatch):
     _set_provider(client, "tap")
-    monkeypatch.setattr(tap, "get_json", lambda *a, **k: (0, {}))
+    monkeypatch.setattr(tap, "post_json", lambda *a, **k: (0, {}))
     r = client.post("/api/v1/payments/payout-webhook", json={"id": "po_1"})
     assert r.status_code == 503                 # verification pending → provider retries
 
@@ -91,9 +91,9 @@ def test_payout_reconcile_sweep_route(client, monkeypatch):
     from app.core.payout import PayoutStore
     store = PayoutStore(client.app.state.container.datastore)
     run(store.apply(payout_ref="po_9", status="pending"))
-    monkeypatch.setattr(tap, "get_json",
-                        lambda *a, **k: (200, {"id": "po_9", "status": "PAID_OUT", "amount": 10.0,
-                                               "currency": "SAR"}))
+    monkeypatch.setattr(tap, "post_json",
+                        lambda *a, **k: (200, {"payouts": [{"id": "po_9", "status": "PAID_OUT",
+                                                            "amount": 10.0, "currency": "SAR"}]}))
     r = client.post("/internal/payments/payouts/reconcile-sweep", headers=_h())
     assert r.status_code == 200 and r.json()["reconciled"] >= 1
 
@@ -101,11 +101,10 @@ def test_payout_reconcile_sweep_route(client, monkeypatch):
 # ── Moyasar-provider split flow (provider-neutral at the route) ─────────────────────
 def test_marketplace_split_flow_on_moyasar(client, monkeypatch):
     _set_provider(client, "moyasar")
-    # onboard (api) → entity id
-    monkeypatch.setattr(moy, "post_json", lambda *a, **k: (200, {"id": "ent_1", "status": "active"}))
-    r = client.post("/internal/payments/sub-merchants/onboard", headers=_h(),
-                    json={"tenant": "acme", "mode": "api", "data": {"name": "Shop"}})
-    assert r.status_code == 200 and r.json()["destination_id"] == "ent_1"
+    # Moyasar recipients are created in its dashboard (no API) — record the destination directly.
+    r = client.post("/internal/payments/sub-merchants/destination", headers=_h(),
+                    json={"tenant": "acme", "destination_id": "ent_1", "status": "active"})
+    assert r.status_code == 200
     client.post("/internal/payments/payment-mode", headers=_h(),
                 json={"tenant": "acme", "mode": "marketplace"})
     # split checkout → Moyasar invoice (minor units)

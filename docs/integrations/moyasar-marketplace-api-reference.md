@@ -20,14 +20,14 @@ Moyasar Financial is a SAMA-licensed Payment Institution.
 | Payment statuses | initiated, paid, authorized, captured, verified, failed, refunded, voided, expired (paid = success) | ✅ Verified | docs.moyasar.com/api/payments/01-create-payment ; /api/other/webhooks/available-webhooks |
 | Webhook verification | `X-Moyasar-Signature` = HMAC-SHA256 of the RAW body (hex) keyed with our secret, OR body `secret_token` = our secret | ✅ Verified | docs.moyasar.com/api/other/webhooks/webhook-reference ; help.moyasar.com/.../moyasar-dashboard-webhooks |
 | Payout object/status | `GET /v1/payouts/{id}`; statuses: queued, initiated, paid, failed, canceled, returned | ✅ Verified | docs.moyasar.com/guides/payouts/payout-details ; /api/payouts/04-create-payout |
-| Onboarding — recipient (Entity) `POST /v1/entities` | `recipient_id` must be a valid Entity/Platform/Beneficiary UUID | ⚠️ **UNVERIFIED** (that `recipient_id` is such a UUID is confirmed; the `POST /v1/entities` creation endpoint is NOT confirmed — may be dashboard/another API) | docs.moyasar.com/api/payments/01-create-payment (recipient_id) ; entity-creation endpoint TBC |
-| Hosted onboarding (mode B) | — | ⚠️ **UNVERIFIED** (declare `onboarding={api}` only until confirmed) | — |
+| Onboarding — recipient creation | **No public API** — Moyasar's documented resource groups (payments, payment-intents, card-auth, invoices, payouts, settlements, internal-transactions, sources, other) include NO entities/beneficiaries API. The recipient (Entity/Beneficiary) is created in the Moyasar DASHBOARD; its id is then recorded via our `/internal/payments/sub-merchants/destination`. The adapter declares NO onboarding capability and never calls a non-existent endpoint. | ✅ Verified (absence) | docs.moyasar.com/api/api-introduction (resource-group list) |
+| `recipient_id` for a split | a valid Entity/Platform/Beneficiary UUID | ✅ Verified | docs.moyasar.com/api/payments/01-create-payment |
 
 **Trust anchor:** `verify_webhook` compares whichever credential is present (HMAC header or body
 secret_token), timing-safe, then re-fetches the payment/invoice and trusts the fetched status — so a
 forged/replayed body settles nothing. Idempotent apply.
 
-## Still to confirm before GA (no assumptions shipped as fact)
-1. Request-side `splits` on `/invoices` (hosted) vs `/payments` (tokenized source) — enablement with Moyasar.
-2. Entity/recipient CREATION endpoint (adapter currently posts `/v1/entities` — UNVERIFIED).
-3. Whether a hosted (mode B) onboarding exists.
+## Residual (account-enablement, not code assumptions)
+1. Request-side `splits` on `/invoices` (hosted) need account enablement with Moyasar support (the field
+   shape is verified on `/payments`). Every ENDPOINT and signature this adapter calls is cited and verified;
+   recipient creation is deliberately NOT an API call here (dashboard + destination route).

@@ -188,15 +188,22 @@ def test_onboard_unknown_mode_refused():
 
 # ── payout ────────────────────────────────────────────────────────────────────────
 def test_fetch_payout_paid(monkeypatch):
-    monkeypatch.setattr(tap, "get_json",
-                        lambda *a, **k: (200, {"id": "po_1", "status": "PAID_OUT", "amount": 50.0,
-                                               "currency": "SAR"}))
+    # retrieve-a-payout = POST /v2/payouts/list with the id in the body (Tap has no GET /payouts/{id})
+    captured = {}
+
+    def fake_post(url, payload, headers, timeout=None):
+        captured["url"] = url
+        captured["payload"] = payload
+        return 200, {"payouts": [{"id": "po_1", "status": "PAID_OUT", "amount": 50.0, "currency": "SAR"}]}
+    monkeypatch.setattr(tap, "post_json", fake_post)
     p = _gw().fetch_payout_status(payout_ref="po_1")
     assert p.status == "paid" and p.amount_minor == 5000
+    assert captured["url"].endswith("/payouts/list") and captured["payload"]["payout_id"] == "po_1"
 
 
 def test_fetch_payout_failed(monkeypatch):
-    monkeypatch.setattr(tap, "get_json", lambda *a, **k: (200, {"id": "po_1", "status": "FAILED"}))
+    monkeypatch.setattr(tap, "post_json",
+                        lambda *a, **k: (200, {"payouts": [{"id": "po_1", "status": "FAILED"}]}))
     assert _gw().fetch_payout_status(payout_ref="po_1").status == "failed"
 
 

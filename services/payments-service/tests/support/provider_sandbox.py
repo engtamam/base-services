@@ -39,6 +39,11 @@ class TapSandbox:
             return self._create_charge(payload)
         if re.search(r"/v3/lead$", url) or url.endswith("/lead"):
             return self._create_lead(payload)
+        if url.endswith("/payouts/list"):
+            # Retrieve a single payout: POST /v2/payouts/list with the id in the body (Tap has no GET).
+            pid = (payload or {}).get("payout_id", "")
+            p = self.payouts.get(pid)
+            return 200, {"payouts": [p] if p else []}
         return 404, {"message": f"no such endpoint {url}"}
 
     def get_json(self, url, headers=None, timeout=None):
@@ -46,9 +51,6 @@ class TapSandbox:
         if "/charges/" in url:
             c = self.charges.get(_id_from(url))
             return (200, c) if c else (404, {"message": "no charge"})
-        if "/payouts/" in url:
-            p = self.payouts.get(_id_from(url))
-            return (200, p) if p else (404, {"message": "no payout"})
         return 404, {"message": f"no such endpoint {url}"}
 
     def _auth(self, headers):
@@ -123,7 +125,6 @@ class MoyasarSandbox:
         self.secret = secret_key
         self.webhook_secret = webhook_secret
         self.invoices: dict = {}
-        self.entities: dict = {}
         self.payouts: dict = {}
         self._n = 0
 
@@ -131,8 +132,6 @@ class MoyasarSandbox:
         self._auth(headers)
         if url.endswith("/invoices"):
             return self._create_invoice(payload)
-        if url.endswith("/entities"):
-            return self._create_entity(payload)
         return 404, {"message": f"no such endpoint {url}"}
 
     def get_json(self, url, headers=None, timeout=None):
@@ -165,13 +164,6 @@ class MoyasarSandbox:
                               "currency": str(p["currency"]).upper(),
                               "url": f"https://moyasar.com/invoices/{iid}"}
         return 200, self.invoices[iid]
-
-    def _create_entity(self, p: dict):
-        assert p, "Moyasar entity: empty body"
-        self._n += 1
-        eid = f"ent_{self._n:06d}"
-        self.entities[eid] = {"id": eid, "status": "active"}
-        return 200, self.entities[eid]
 
     def pay_invoice(self, invoice_id: str) -> None:
         self.invoices[invoice_id]["status"] = "paid"

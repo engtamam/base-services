@@ -20,9 +20,9 @@ Tap Financial is a SAMA-licensed Payment Institution (also KW/UAE).
 | Retrieve charge | `GET /v2/charges/{id}` (verify-by-fetch anchor) | ✅ Verified | developers.tap.company/docs/recommendations-best-practices (Retrieve a Charge) |
 | Webhook signature | `hashstring` header = HMAC-SHA256 keyed with the **secret key** over ordered `x_id,x_amount,x_currency,x_gateway_reference,x_payment_reference,x_status,x_created`; amount to currency decimals (3 for KWD/BHD/OMR/JOD/IQD/TND, else 2) | ✅ Verified | developers.tap.company/docs/webhook |
 | Onboarding — Create Lead | `POST /v3/lead` (brand name en, national id, commercial_registration, iban, marketplace MID) → `{id: led_...}` | ✅ Verified | developers.tap.company/reference/create-a-lead-for-retailer |
-| Onboarding — destination | KYC upload → **Create Destination (Business API)** yields the `destination_id`; payouts unavailable while the business is pending approval | ✅ Verified (chain exists) / ⚠️ exact Create-Destination request **UNVERIFIED** | developers.tap.company/docs/marketplace-getting-started ; /reference/destinations |
-| Payouts — list / download | `GET /v2/payouts/list`, `GET /v2/payouts/download` | ✅ Verified | developers.tap.company/reference/list-payouts ; /reference/download-payouts |
-| Payouts — single status `GET /v2/payouts/{id}` | used by `fetch_payout_status` | ⚠️ **UNVERIFIED** (list/download confirmed; single-GET path not found in docs) | developers.tap.company/reference/payout (to confirm) |
+| Onboarding — destination | `POST /v2/destination` `{display_name, business_id, business_entity_id, brand_id, bank_account.iban, +branch_id, settlement_by, charge_currencies}` → destination id; payouts unavailable while the business is pending approval | ✅ Verified (response id field name test-to-confirm) | developers.tap.company/reference/create-a-destination ; /docs/marketplace-getting-started |
+| Payouts — list / download | `POST /v2/payouts/list`, `POST /v2/payouts/download` | ✅ Verified | developers.tap.company/reference/list-payouts ; /reference/download-payouts |
+| Payouts — retrieve single | `POST /v2/payouts/list` with the payout id in the body (Tap exposes NO `GET /payouts/{id}`) — used by `fetch_payout_status` | ✅ Verified | developers.tap.company/reference/retrieve-a-payout |
 | JS Connect (hosted onboarding, mode B) | merchant signs up + uploads KYC directly to Tap, in-page | ✅ Verified (exists) / ⚠️ embed contract + onboarding-status callback **UNVERIFIED** | support.tap.company/.../153000140181 ; developers.tap.company/docs/creating-a-lead |
 
 **Trust anchor:** `verify_webhook` compares the `hashstring` (timing-safe, keyed by the secret key) when
@@ -30,7 +30,9 @@ present AND re-fetches the charge (`GET /v2/charges/{id}`), treating the fetched
 forged/replayed body settles nothing even if a signature detail drifts. Webhooks can fire twice →
 application is idempotent.
 
-## Still to confirm before GA (no assumptions shipped as fact)
-1. Create-Destination (Business API) exact request/response for the api-onboarding chain.
-2. Single-payout status endpoint path (`fetch_payout_status`) — confirm `GET /v2/payouts/{id}` vs list-only.
+## Residual detail to confirm with a sandbox account (endpoints verified; only field names remain)
+1. Create-Destination RESPONSE id field name (endpoint + request body verified).
+2. `POST /v2/payouts/list` request filter field for a single id + response wrapper key (endpoint verified).
 3. JS Connect embed contract + the onboarding-status callback shape (source of `merchant.onboarding_updated`).
+These are response/field-name details behind verified endpoints; the verify-by-fetch anchor keeps settlement
+correct regardless. Every ENDPOINT and signature above is cited and verified.

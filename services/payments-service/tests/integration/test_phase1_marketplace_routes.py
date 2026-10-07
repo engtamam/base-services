@@ -12,7 +12,6 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-import app.adapters.payment.moyasar as moy
 import app.adapters.payment.tap as tap
 
 ITOKEN = "t" * 40
@@ -75,28 +74,32 @@ def test_unknown_marketplace_credential_refused(client):
 
 
 # ── onboarding (api) emits the event + stores the mapping ──────────────────────────
-def test_onboard_api_stores_destination_and_emits_event(client, monkeypatch):
-    # Moyasar's api onboarding returns a recipient id immediately (Tap's is lead-based/pending — see the
-    # tap adapter tests), so use Moyasar here to assert the stored-destination + active-event path.
-    for name, value in (("MARKETPLACE_PROVIDER", "moyasar"), ("MARKETPLACE_SECRET_KEY", "sk_x")):
-        client.post("/internal/payments/marketplace-credentials", headers=_h(),
-                    json={"name": name, "value": value})
-    monkeypatch.setattr(moy, "post_json", lambda *a, **k: (200, {"id": "ent_1", "status": "active"}))
+def test_set_destination_stores_and_emits_event(client):
+    # The destination is recorded post-approval (Tap lead approved / Moyasar dashboard recipient) via the
+    # destination route, which stores the mapping and emits merchant.onboarding_updated.
+    _configure_marketplace(client)   # tap
     events = []
 
     async def collect(ev):
         events.append(ev)
     run(client.app.state.container.event_bus.subscribe("merchant.onboarding_updated", collect))
 
-    r = client.post("/internal/payments/sub-merchants/onboard", headers=_h(),
-                    json={"tenant": "acme", "mode": "api", "data": {"name": "Shop"}})
-    assert r.status_code == 200 and r.json()["destination_id"] == "ent_1"
+    r = client.post("/internal/payments/sub-merchants/destination", headers=_h(),
+                    json={"tenant": "acme", "destination_id": "dst_1", "status": "active"})
+    assert r.status_code == 200 and r.json()["destination_id"] == "dst_1"
     g = client.get("/internal/payments/sub-merchants/acme", headers=_h()).json()
-    assert g["status"] == "active" and g["destination_id"] == "ent_1"
+    assert g["status"] == "active" and g["destination_id"] == "dst_1"
     assert any(e.type == "merchant.onboarding_updated" and e.payload["status"] == "active"
                and e.payload["has_destination"] for e in events)
-    # the event carries no KYB/PII
-    assert "name" not in str([e.payload for e in events]) or "Shop" not in str([e.payload for e in events])
+
+
+def test_onboard_api_creates_a_lead_pending(client, monkeypatch):
+    # Tap api onboarding creates a v3 lead (pending) — no destination yet; verified by the adapter tests.
+    _configure_marketplace(client)   # tap
+    monkeypatch.setattr(tap, "post_json", lambda *a, **k: (200, {"id": "led_1", "status": "created"}))
+    r = client.post("/internal/payments/sub-merchants/onboard", headers=_h(),
+                    json={"tenant": "acme", "mode": "api", "data": {"brand": {"name": "Acme"}}})
+    assert r.status_code == 200 and r.json()["status"] == "pending" and r.json()["destination_id"] == ""
 
 
 def test_onboard_refused_when_marketplace_unconfigured(client):

@@ -21,11 +21,12 @@ def _gw(**kw):
     return moy.MoyasarGateway(api_key="sk_test", **kw)
 
 
-def test_declares_marketplace_capabilities_api_onboarding():
+def test_declares_marketplace_capabilities_no_onboarding_api():
     g = _gw()
     assert g.model == MODEL_MARKETPLACE
-    assert {CAP_SPLIT, CAP_ONBOARDING, CAP_PAYOUT} <= g.capabilities
-    assert g.onboarding_modes == {ONBOARD_API}
+    assert {CAP_SPLIT, CAP_PAYOUT} <= g.capabilities
+    assert CAP_ONBOARDING not in g.capabilities      # Moyasar has no recipient-creation API
+    assert g.onboarding_modes == frozenset()
 
 
 def test_requires_secret_key():
@@ -131,15 +132,17 @@ def test_webhook_wrong_hmac_header_refused_without_fetch(monkeypatch):
     assert out.verified is False and called["n"] == 0
 
 
-def test_onboard_api_returns_recipient_id(monkeypatch):
-    monkeypatch.setattr(moy, "post_json", lambda *a, **k: (200, {"id": "ent_1", "status": "active"}))
+def test_onboard_api_refused_no_recipient_api(monkeypatch):
+    # Moyasar has no recipient-creation API — onboarding is refused (recipient made in dashboard, then
+    # recorded via the destination route). The adapter never calls a non-existent endpoint.
+    called = {"n": 0}
+    monkeypatch.setattr(moy, "post_json", lambda *a, **k: called.__setitem__("n", called["n"] + 1) or (200, {}))
     r = _gw().onboard_merchant(mode=ONBOARD_API, data={"name": "Shop"})
-    assert r.ok and r.destination_id == "ent_1" and r.status == "active"
+    assert r.ok is False and "dashboard" in r.error.lower() and called["n"] == 0
 
 
-def test_onboard_hosted_refused(monkeypatch):
-    r = _gw().onboard_merchant(mode="hosted", data={})
-    assert r.ok is False          # Moyasar declares api-only onboarding
+def test_onboard_hosted_also_refused():
+    assert _gw().onboard_merchant(mode="hosted", data={}).ok is False
 
 
 def test_fetch_payout_paid(monkeypatch):

@@ -21,11 +21,10 @@ from hashlib import sha256
 from urllib.parse import quote
 
 from app.adapters.payment_http import basic_auth, get_json, post_json
-from app.ports.payment_gateway import (CANCELLED, CAP_CHECKOUT, CAP_ONBOARDING, CAP_PAYOUT, CAP_SPLIT,
-                                       FAILED, MODEL_MARKETPLACE, ONBOARD_API, PAYOUT_FAILED, PAYOUT_PAID,
-                                       PAYOUT_PENDING, PENDING, SUCCEEDED, CheckoutSession,
-                                       GatewayUnavailable, OnboardResult, PaymentOutcome, PayoutStatus,
-                                       SplitDestination)
+from app.ports.payment_gateway import (CANCELLED, CAP_CHECKOUT, CAP_PAYOUT, CAP_SPLIT, FAILED,
+                                       MODEL_MARKETPLACE, PAYOUT_FAILED, PAYOUT_PAID, PAYOUT_PENDING,
+                                       PENDING, SUCCEEDED, CheckoutSession, GatewayUnavailable,
+                                       OnboardResult, PaymentOutcome, PayoutStatus, SplitDestination)
 
 _DEFAULT_BASE = "https://api.moyasar.com/v1"
 _PAID = {"PAID", "CAPTURED"}
@@ -51,9 +50,13 @@ def _norm_payout(status: str) -> str:
 class MoyasarGateway:
     driver = "moyasar"
     model = MODEL_MARKETPLACE
-    capabilities = frozenset({CAP_CHECKOUT, CAP_ONBOARDING, CAP_SPLIT, CAP_PAYOUT})
-    # Moyasar hosted-direct (mode B) onboarding is CONFIRM-at-build — declare api only until confirmed.
-    onboarding_modes = frozenset({ONBOARD_API})
+    # Moyasar exposes NO entity/recipient-creation API (its documented resource groups — payments,
+    # invoices, payouts, settlements, sources, … — have none; ref: docs.moyasar.com/api/api-introduction),
+    # so this adapter declares NO onboarding capability: a sub-merchant recipient is created in the Moyasar
+    # dashboard, and its id is recorded via /internal/payments/sub-merchants/destination. We never call a
+    # non-existent endpoint.
+    capabilities = frozenset({CAP_CHECKOUT, CAP_SPLIT, CAP_PAYOUT})
+    onboarding_modes: frozenset[str] = frozenset()
 
     def __init__(self, *, api_key: str = "", base: str = "", webhook_secret: str = "",
                  timeout: int = 30, **_) -> None:
@@ -149,24 +152,13 @@ class MoyasarGateway:
 
     # ── onboarding ───────────────────────────────────────────────────────────────
     def onboard_merchant(self, *, mode: str, data: dict) -> OnboardResult:
-        if mode != ONBOARD_API:
-            return OnboardResult(ok=False, provider=self.driver,
-                                 error=f"unsupported onboarding mode {mode!r}")
-        # UNVERIFIED (see docs/integrations/moyasar-marketplace-api-reference.md): recipient_id must be a
-        # valid Entity UUID (confirmed), but the entity-CREATION endpoint is not confirmed in Moyasar's
-        # docs — POST /v1/entities is a placeholder to confirm with Moyasar before GA.
-        try:
-            code, resp = post_json(f"{self._base}/entities", dict(data), self._headers(),
-                                   timeout=self._timeout)
-        except GatewayUnavailable as ex:
-            return OnboardResult(ok=False, provider=self.driver, error=str(ex))
-        rd = resp if isinstance(resp, dict) else {}
-        rid = str(rd.get("id", ""))
-        if code == 0 or not rid:
-            return OnboardResult(ok=False, provider=self.driver,
-                                 error=f"Moyasar onboarding failed: {rd.get('message', code)}")
-        status = "active" if str(rd.get("status", "")).lower() in ("active", "approved", "verified") else "pending"
-        return OnboardResult(ok=True, provider=self.driver, destination_id=rid, status=status)
+        # Moyasar has no public entity/recipient-creation API (see the class docstring), so onboarding is
+        # not an API operation here — the recipient is created in the Moyasar dashboard and recorded via
+        # /internal/payments/sub-merchants/destination. Refuse rather than call a non-existent endpoint.
+        return OnboardResult(
+            ok=False, provider=self.driver,
+            error="Moyasar has no recipient-creation API — create the recipient (Entity/Beneficiary) in "
+                  "the Moyasar dashboard, then record its id via /internal/payments/sub-merchants/destination")
 
     def fetch_payout_status(self, *, payout_ref: str) -> PayoutStatus:
         if not _ID_RE.match(payout_ref or ""):
