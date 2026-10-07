@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.adapters.payment.console import ConsoleGateway
+from app.adapters.payment.moyasar import MoyasarGateway
 from app.adapters.payment.null import NullGateway
 from app.adapters.payment.tap import TapGateway
 from app.adapters.payment.tuwaiqpay import TuwaiqPayGateway
@@ -29,6 +30,7 @@ SELECTABLE_DRIVERS = tuple(d for d in _REGISTRY if d != "null")
 # conduit gateway, and vice-versa.
 _MARKETPLACE_REGISTRY: dict[str, type] = {
     "tap": TapGateway,
+    "moyasar": MoyasarGateway,
 }
 MARKETPLACE_DRIVERS = tuple(_MARKETPLACE_REGISTRY)
 
