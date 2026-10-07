@@ -101,6 +101,44 @@ async def run_sweep_once(
     return stats
 
 
+async def run_payout_sweep_once(
+    *,
+    payouts,
+    service: PaymentService,
+    page_size: int,
+    concurrency: int = 8,
+    logger=None,
+) -> SweepStats:
+    """One pass over PENDING payouts: re-query each via the provider and apply its terminal outcome — the
+    safety net behind the payout webhook. SAME safety properties as run_sweep_once: bounded/keyset-paged
+    (PayoutStore.pending_page, never a scan), per-row isolated, idempotent (apply moves a payout terminal
+    at most once and emits one event), cancellable. The provider is platform-level, so no tenant crossing."""
+    stats = SweepStats()
+    after: str | None = None
+    sem = asyncio.Semaphore(max(1, int(concurrency)))
+
+    async def _process(row: dict) -> None:
+        ref = row.get("payout_ref") or row.get("id", "")
+        async with sem:
+            try:
+                await service.reconcile_payout(ref)
+                stats.reconciled += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — one bad payout must never abort the sweep
+                stats.errors += 1
+                if logger is not None:
+                    logger.warning("payout_sweep_row_failed", extra={"payout_ref": ref}, exc_info=True)
+
+    while True:
+        rows, after = await payouts.pending_page(limit=max(1, int(page_size)), after=after)
+        stats.scanned += len(rows)
+        await asyncio.gather(*(_process(row) for row in rows))
+        if after is None:
+            break
+    return stats
+
+
 class ReconcileSweep:
     """Owns the periodic loop + its asyncio task. Start on lifespan startup, stop on shutdown."""
 

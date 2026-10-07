@@ -16,6 +16,7 @@ from app.core.option_gate import OptionGate
 from app.core.payment_mode import PaymentModeGate
 from app.core.payment_requests import PaymentRequestStore
 from app.core.payments import PaymentService
+from app.core.payout import PayoutStore
 from app.core.submerchant import SubMerchantStore
 from app.core.secret_store import SecretStore
 
@@ -80,6 +81,10 @@ def build_submerchants(request: Request) -> SubMerchantStore:
     return SubMerchantStore(request.app.state.container.datastore)
 
 
+def build_payouts(request: Request) -> PayoutStore:
+    return PayoutStore(request.app.state.container.datastore)
+
+
 def build_payment_service(request: Request, settings: Settings | None = None) -> PaymentService:
     settings = settings or get_settings()
     container = request.app.state.container
@@ -99,4 +104,5 @@ def build_payment_service(request: Request, settings: Settings | None = None) ->
         select_mode=lambda tenant: mode_gate.selected(tenant),
         # Marketplace model wiring — platform-scoped provider + per-tenant sub-merchant destination.
         marketplace=build_marketplace_gateways(request, settings),
-        submerchants=build_submerchants(request))
+        submerchants=build_submerchants(request),
+        payouts=build_payouts(request))

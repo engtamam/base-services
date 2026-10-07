@@ -26,13 +26,15 @@ from app.core.merchant_credentials import CredentialResolver
 from app.core.payment_requests import COMPLETED, EXPIRED, PaymentRequestStore
 from app.ports.event_bus import Event, EventBus
 from app.core.split import SplitError, plan_split
-from app.ports.payment_gateway import (CANCELLED, CAP_CHECKOUT, CAP_SPLIT, FAILED, MODEL_CONDUIT,
-                                       MODEL_MARKETPLACE, PENDING, SUCCEEDED, GatewayUnavailable,
-                                       PaymentOutcome, SplitDestination, capabilities_of)
+from app.ports.payment_gateway import (CANCELLED, CAP_CHECKOUT, CAP_PAYOUT, CAP_SPLIT, FAILED,
+                                       MODEL_CONDUIT, MODEL_MARKETPLACE, PAYOUT_FAILED, PAYOUT_PAID,
+                                       PENDING, SUCCEEDED, GatewayUnavailable, PaymentOutcome,
+                                       SplitDestination, capabilities_of)
 
 # Topics live in one catalogue (app.core.payment_events); re-exported here so existing imports
 # (`from app.core.payments import TOPIC_COMPLETED`) keep working unchanged.
-from app.core.payment_events import TOPIC_COMPLETED, TOPIC_FAILED  # noqa: E402,F401
+from app.core.payment_events import (TOPIC_COMPLETED, TOPIC_FAILED,  # noqa: E402,F401
+                                     TOPIC_PAYOUT_FAILED, TOPIC_PAYOUT_SETTLED)
 
 _log = logging.getLogger("app.payments")
 
@@ -54,6 +56,24 @@ def _peek_provider_ref(body: bytes) -> str:
     for key in ("provider_ref", "transactionId", "id"):   # console / generic / tap (top-level `id`)
         if payload.get(key):
             return str(payload[key])
+    return ""
+
+
+def _peek_payout_ref(body: bytes) -> str:
+    """Cheaply pull the payout id from a payout webhook body WITHOUT trusting it — the trust anchor is the
+    verify-by-fetch that follows. Returns "" when the body exposes no id."""
+    try:
+        payload = json.loads(body.decode("utf-8", "replace")) if body else {}
+    except Exception:   # noqa: BLE001
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("payout_ref", "payout_id", "id"):
+        if payload.get(key):
+            return str(payload[key])
+    details = payload.get("payout")
+    if isinstance(details, dict) and details.get("id"):
+        return str(details["id"])
     return ""
 
 
@@ -85,14 +105,16 @@ class PaymentService:
     def __init__(self, *, requests: PaymentRequestStore, gateways: CredentialResolver,
                  event_bus: EventBus, redirect_base_url: str, allowed_hosts: frozenset[str],
                  link_ttl_seconds: int, is_enabled=None, select_mode=None,
-                 marketplace=None, submerchants=None) -> None:
+                 marketplace=None, submerchants=None, payouts=None) -> None:
         self._req = requests
         self._gw = gateways
         # Marketplace model wiring (None on a conduit-only deployment → marketplace mode fails closed):
         #   marketplace   = MarketplaceGateways resolver (platform-scoped provider creds -> gateway)
         #   submerchants  = SubMerchantStore (tenant -> active destination id)
+        #   payouts       = PayoutStore (provider settlement outcomes we observe/reconcile)
         self._marketplace = marketplace
         self._submerchants = submerchants
+        self._payouts = payouts
         self._bus = event_bus
         self._redirect_base = redirect_base_url.rstrip("/")
         self._allowed_hosts = allowed_hosts
@@ -445,3 +467,55 @@ class PaymentService:
             currency=row.get("currency", ""))
         outcome.provider_ref = row.get("provider_ref", "")   # anchor to our stored ref
         return await self.apply_outcome(tenant=tenant, outcome=outcome)
+
+    # ── payouts (marketplace: observe + reconcile the provider's settlements) ──────
+    async def _marketplace_gateway_or_raise(self):
+        if self._marketplace is None:
+            raise GatewayUnavailable("marketplace mode is not configured on this deployment")
+        gw = await self._marketplace.gateway()
+        if gw is None:
+            raise GatewayUnavailable("no marketplace provider is configured")
+        return gw
+
+    async def apply_payout(self, outcome, *, tenant: str = "", destination_id: str = "") -> dict | None:
+        """Record a payout outcome and emit payout.settled/failed EXACTLY ONCE (on the terminal
+        transition). Idempotent: a redelivered terminal outcome moves nothing and emits nothing."""
+        if self._payouts is None or not getattr(outcome, "payout_ref", ""):
+            return None
+        transitioned, row = await self._payouts.apply(
+            payout_ref=outcome.payout_ref, status=outcome.status, provider=outcome.provider,
+            amount_minor=outcome.amount_minor, currency=outcome.currency,
+            destination_id=destination_id, tenant=tenant)
+        if transitioned:
+            topic = TOPIC_PAYOUT_SETTLED if row.get("status") == PAYOUT_PAID else TOPIC_PAYOUT_FAILED
+            await self._bus.publish(topic, Event(type=topic, payload={
+                "tenant": row.get("tenant", ""), "payout_ref": row.get("payout_ref", ""),
+                "destination_id": row.get("destination_id", ""), "status": row.get("status", ""),
+                "amount_minor": row.get("amount_minor", 0), "currency": row.get("currency", ""),
+                "provider": row.get("provider", "")}))
+        return row
+
+    async def handle_payout_webhook(self, *, headers: dict[str, str], body: bytes) -> dict | None:
+        """Ingest a provider payout webhook. Trust anchor = verify-by-fetch (re-query the provider for the
+        payout), never the posted body; apply idempotently. A junk/unknown ref that the fetch cannot
+        resolve settles nothing."""
+        ref = _peek_payout_ref(body)
+        if not ref:
+            return None
+        gw = await self._marketplace_gateway_or_raise()
+        if CAP_PAYOUT not in capabilities_of(gw):
+            return None
+        status = await asyncio.to_thread(gw.fetch_payout_status, payout_ref=ref)
+        if not status.verified:
+            return None
+        return await self.apply_payout(status)
+
+    async def reconcile_payout(self, payout_ref: str) -> dict | None:
+        """Re-query a payout the provider last left PENDING (missed terminal webhook) and apply it — the
+        safety net behind the payout webhook, through the SAME idempotent seam."""
+        gw = await self._marketplace_gateway_or_raise()
+        if CAP_PAYOUT not in capabilities_of(gw):
+            return None
+        status = await asyncio.to_thread(gw.fetch_payout_status, payout_ref=payout_ref)
+        status.payout_ref = payout_ref                       # anchor to our stored ref
+        return await self.apply_payout(status)

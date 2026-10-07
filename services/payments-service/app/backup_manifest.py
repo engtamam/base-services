@@ -43,6 +43,10 @@ BACKUP: dict[str, Any] = {
         # tenant -> provider sub-merchant destination id + onboarding status. The opaque payout target
         # for each shop's split share (never the IBAN/docs — the provider holds those). Tenant-scoped.
         {"name": "submerchant_mappings", "tenant_scoped": True},
+        # Observed provider payout/settlement outcomes (status ledger). Restoring keeps payout.settled/
+        # failed emitted exactly once — without it a re-observed payout could re-emit. Platform-level
+        # settlements (a row may note the tenant it paid), restored whole.
+        {"name": "payouts", "tenant_scoped": False},
     ],
     "excluded": [
         # Idempotency/claim keys for create_link — regenerated on demand, not data worth restoring;

@@ -53,3 +53,9 @@ env:
 # No ingress: reached service-to-service on the internal tier only.
 ingress:
   enabled: false
+
+# These internal endpoints have NO caller without this block.
+cronJobs:
+  - name: payout-reconcile
+    schedule: "23 3 * * *"
+    path: /internal/payments/payouts/reconcile-sweep

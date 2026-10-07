@@ -96,6 +96,7 @@ def build_manifest(
             # follows, and the gateway's server-to-server webhook (adapter-verified, tenant in the path).
             {"path": "/api/v1/payments/pay/{}", "tier": "public", "method": "GET"},
             {"path": "/api/v1/payments/webhook/{}", "tier": "public", "method": "POST"},
+            {"path": "/api/v1/payments/payout-webhook", "tier": "public", "method": "POST"},
             # Internal peer tier (a product service acting for a shop): sealed merchant credentials
             # (write-only; no read route) and the server-authoritative PaymentRequest lifecycle.
             {"path": "/internal/payments/merchant-credentials", "tier": "internal", "method": "GET"},
@@ -112,6 +113,7 @@ def build_manifest(
             {"path": "/internal/payments/sub-merchants/{}", "tier": "internal", "method": "GET"},
             {"path": "/internal/payments/payment-mode", "tier": "internal", "method": "POST"},
             {"path": "/internal/payments/payment-mode", "tier": "internal", "method": "GET"},
+            {"path": "/internal/payments/payouts/reconcile-sweep", "tier": "internal", "method": "POST"},
         ],
         "ports": ports or [],  # port -> driver, from the composition root
         # FILL THIS too, or leave it empty deliberately. Same trap as capabilities: an empty

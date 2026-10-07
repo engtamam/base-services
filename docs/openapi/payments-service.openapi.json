@@ -1004,6 +1004,26 @@
         ]
       }
     },
+    "/api/v1/payments/payout-webhook": {
+      "post": {
+        "description": "Receive the marketplace provider's payout/settlement webhook. No token (the provider has none of\nours); the handler re-queries the provider for the payout (verify-by-fetch) and applies it\nidempotently, so a forged/replayed POST settles nothing. Always 200 to a well-formed request so the\nprovider does not retry-storm; 503 only when the provider is unreachable (verification pending).",
+        "operationId": "payout_webhook_api_v1_payments_payout_webhook_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Payout Webhook",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
     "/api/v1/payments/webhook/{tenant}": {
       "post": {
         "description": "Receive a shop gateway's status webhook. The tenant in the path selects whose gateway verifies\nit; verification (signature / verify-by-fetch) is the gate, and application is idempotent, so a\nforged or replayed POST changes nothing. Always 200 to a well-formed request so the gateway does\nnot retry-storm; the body says whether anything was applied.",
@@ -2062,6 +2082,74 @@
           }
         },
         "summary": "Set Payment Mode",
+        "tags": [
+          "internal-payments"
+        ]
+      }
+    },
+    "/internal/payments/payouts/reconcile-sweep": {
+      "post": {
+        "description": "Re-query every PENDING payout and apply its terminal outcome \u2014 the safety net behind the payout\nwebhook. Bounded/keyset-paged, idempotent, per-row isolated. Driven by a daily cron.",
+        "operationId": "payout_reconcile_sweep_internal_payments_payouts_reconcile_sweep_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Payout Reconcile Sweep Internal Payments Payouts Reconcile Sweep Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Payout Reconcile Sweep",
         "tags": [
           "internal-payments"
         ]

@@ -78,6 +78,12 @@ CRONS: dict[str, list] = {   # each job: a (name, schedule, path) tuple, or a di
         {"name": "health-check", "schedule": "23 * * * *", "path": "/internal/backup/health/check"},
         {"name": "prune", "schedule": "51 3 * * *", "path": "/internal/backup/prune"},
     ],
+    "payments-service": [
+        # Safety net behind the (provider-delivered) payout webhook: re-query PENDING payouts daily and
+        # emit their terminal payout.settled/failed. Bounded/idempotent; harmless if no marketplace is
+        # configured (no pending payouts to sweep).
+        ("payout-reconcile", "23 3 * * *", "/internal/payments/payouts/reconcile-sweep"),
+    ],
     "billing-service": [("dunning", "31 4 * * *", "/internal/billing/dunning"),
                         # The renewal engine — invoice subscriptions whose period has ended. Daily,
                         # offset from dunning so the two sweeps do not contend. Without it, year-two

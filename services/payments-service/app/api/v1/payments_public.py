@@ -76,3 +76,33 @@ async def gateway_webhook(request: Request, tenant: str):
     if row is None:
         return JSONResponse({"ok": True, "applied": False})
     return JSONResponse({"ok": True, "applied": True, "status": row.get("status")})
+
+
+@router.post("/payout-webhook", dependencies=[Depends(rate_limit)])
+async def payout_webhook(request: Request):
+    """Receive the marketplace provider's payout/settlement webhook. No token (the provider has none of
+    ours); the handler re-queries the provider for the payout (verify-by-fetch) and applies it
+    idempotently, so a forged/replayed POST settles nothing. Always 200 to a well-formed request so the
+    provider does not retry-storm; 503 only when the provider is unreachable (verification pending)."""
+    max_bytes = get_settings().PAYMENTS_MAX_WEBHOOK_BYTES
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > max_bytes:
+        return JSONResponse({"ok": False, "reason": "payload too large"}, status_code=413)
+    body = await request.body()
+    if len(body) > max_bytes:
+        return JSONResponse({"ok": False, "reason": "payload too large"}, status_code=413)
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    svc = build_payment_service(request)
+    try:
+        row = await svc.handle_payout_webhook(headers=headers, body=body)
+    except GatewayUnavailable:
+        logging.getLogger("app.payments").warning(
+            "payout webhook verify-by-fetch unreachable — asking for retry")
+        return JSONResponse({"ok": False, "reason": "verification temporarily unavailable"},
+                            status_code=503)
+    except Exception:   # noqa: BLE001 — a malformed webhook must not 500 the provider into retries
+        logging.getLogger("app.payments").exception("payout webhook processing failed")
+        return JSONResponse({"ok": True, "applied": False})
+    if row is None:
+        return JSONResponse({"ok": True, "applied": False})
+    return JSONResponse({"ok": True, "applied": True, "status": row.get("status")})

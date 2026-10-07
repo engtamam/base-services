@@ -19,11 +19,15 @@ TOPIC_FAILED = "payment.failed"
 # prompt the shop ("finish verification", "you can now receive payouts"). Carries NO KYB/PII, only the
 # tenant, the new status, and whether a payout destination is now on file.
 TOPIC_ONBOARDING_UPDATED = "merchant.onboarding_updated"
-# Payout (settlement) outcomes — reserved for Phase 2 with the payout reconcile sweep that emits them:
-#   TOPIC_PAYOUT_SETTLED = "payout.settled"
-#   TOPIC_PAYOUT_FAILED  = "payout.failed"
+# Payout (settlement) outcomes — the provider paid a sub-merchant, or the payout failed. A consumer uses
+# these to tell a shop "your money landed" / "your payout failed, check your bank details". Emitted once
+# per payout (terminal transition), from the payout webhook and the payout reconcile sweep. No PII.
+TOPIC_PAYOUT_SETTLED = "payout.settled"
+TOPIC_PAYOUT_FAILED = "payout.failed"
 
 # The full set this service may publish — one declared catalogue (mirrors billing-service's EMITTED).
-EMITTED = (TOPIC_COMPLETED, TOPIC_FAILED, TOPIC_ONBOARDING_UPDATED)
+EMITTED = (TOPIC_COMPLETED, TOPIC_FAILED, TOPIC_ONBOARDING_UPDATED,
+           TOPIC_PAYOUT_SETTLED, TOPIC_PAYOUT_FAILED)
 
-__all__ = ["TOPIC_COMPLETED", "TOPIC_FAILED", "TOPIC_ONBOARDING_UPDATED", "EMITTED"]
+__all__ = ["TOPIC_COMPLETED", "TOPIC_FAILED", "TOPIC_ONBOARDING_UPDATED",
+           "TOPIC_PAYOUT_SETTLED", "TOPIC_PAYOUT_FAILED", "EMITTED"]

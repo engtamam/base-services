@@ -17,7 +17,7 @@ from app.adapters.payment_http import validate_gateway_base
 from app.api.internal import require_internal_token
 from app.api.payments_deps import (build_marketplace_gateways, build_marketplace_secrets,
                                    build_merchant_secrets, build_mode_gate, build_payment_service,
-                                   build_submerchants)
+                                   build_payouts, build_submerchants)
 from app.core.currency import SUPPORTED_CURRENCIES
 from app.core.marketplace_credentials import API_BASE as MKT_API_BASE
 from app.core.marketplace_credentials import SETTABLE_NAMES as MKT_SETTABLE_NAMES
@@ -418,3 +418,16 @@ async def set_payment_mode(request: Request, body: _ModeIn) -> dict:
 async def get_payment_mode(request: Request, tenant: str = "") -> dict:
     st = await build_mode_gate(request).status(tenant=tenant)
     return {"ok": True, "tenant": tenant, "mode": st.mode, "locked": st.locked, "source": st.source}
+
+
+@router.post("/payouts/reconcile-sweep", dependencies=[Depends(require_internal_token)])
+async def payout_reconcile_sweep(request: Request) -> dict:
+    """Re-query every PENDING payout and apply its terminal outcome — the safety net behind the payout
+    webhook. Bounded/keyset-paged, idempotent, per-row isolated. Driven by a daily cron."""
+    from app.config import get_settings
+    from app.core.reconcile_sweep import run_payout_sweep_once
+    s = get_settings()
+    stats = await run_payout_sweep_once(
+        payouts=build_payouts(request), service=build_payment_service(request),
+        page_size=s.PAYMENTS_RECONCILE_PAGE_SIZE, concurrency=s.PAYMENTS_RECONCILE_CONCURRENCY)
+    return {"ok": True, "scanned": stats.scanned, "reconciled": stats.reconciled, "errors": stats.errors}
