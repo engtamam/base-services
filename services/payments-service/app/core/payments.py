@@ -25,8 +25,8 @@ from urllib.parse import urlsplit
 from app.core.merchant_credentials import CredentialResolver
 from app.core.payment_requests import COMPLETED, EXPIRED, PaymentRequestStore
 from app.ports.event_bus import Event, EventBus
-from app.ports.payment_gateway import (CANCELLED, CAP_CHECKOUT, FAILED, PENDING, SUCCEEDED,
-                                       GatewayUnavailable, PaymentOutcome, capabilities_of)
+from app.ports.payment_gateway import (CANCELLED, CAP_CHECKOUT, FAILED, MODEL_CONDUIT, PENDING,
+                                       SUCCEEDED, GatewayUnavailable, PaymentOutcome, capabilities_of)
 
 # Topics live in one catalogue (app.core.payment_events); re-exported here so existing imports
 # (`from app.core.payments import TOPIC_COMPLETED`) keep working unchanged.
@@ -82,7 +82,7 @@ class CreatedLink:
 class PaymentService:
     def __init__(self, *, requests: PaymentRequestStore, gateways: CredentialResolver,
                  event_bus: EventBus, redirect_base_url: str, allowed_hosts: frozenset[str],
-                 link_ttl_seconds: int, is_enabled=None) -> None:
+                 link_ttl_seconds: int, is_enabled=None, select_mode=None) -> None:
         self._req = requests
         self._gw = gateways
         self._bus = event_bus
@@ -91,6 +91,11 @@ class PaymentService:
         self._ttl = int(link_ttl_seconds)
         # Optional async (tenant)->bool lock check. None ⇒ always enabled (wired in P6).
         self._is_enabled = is_enabled
+        # Optional async (tenant)->str payment-mode resolver (the single-select PaymentModeGate). None,
+        # or a resolver that returns the default, means MODEL_CONDUIT — today's only wired model — so an
+        # untouched deployment behaves exactly as before. A tenant switched to a model this build does not
+        # yet route (marketplace, until its path lands) is refused clearly rather than billed the wrong way.
+        self._select_mode = select_mode
 
     def _host_allowed(self, url: str) -> bool:
         # Fail-closed: an empty allowlist permits nothing. A redirect target must be an HTTPS URL whose
@@ -105,6 +110,20 @@ class PaymentService:
         if self._is_enabled is not None and not await self._is_enabled(tenant):
             raise PaymentsDisabled(f"payments are disabled for tenant {tenant!r}")
 
+    async def _resolve_mode(self, tenant: str) -> str:
+        """The tenant's single-select payment model. Defaults to MODEL_CONDUIT (today's only wired model),
+        so no resolver — or a resolver returning the default — keeps behaviour byte-identical. A tenant
+        set to a model this build does not yet route is refused fail-closed (never billed the wrong way)."""
+        if self._select_mode is None:
+            return MODEL_CONDUIT
+        mode = await self._select_mode(tenant) or MODEL_CONDUIT
+        if mode != MODEL_CONDUIT:
+            # The marketplace routing branch lands later in Phase 1; until then a non-conduit selection is
+            # a clear refusal, not a silent conduit charge.
+            raise PaymentNotConfigured(
+                f"payment mode {mode!r} is selected for tenant {tenant!r} but is not available yet")
+        return mode
+
     async def get(self, request_id: str) -> dict | None:
         """The stored PaymentRequest row (or None), for a route that needs to read request state
         without reaching into the private store (I4)."""
@@ -118,6 +137,9 @@ class PaymentService:
         bill is minted, so two concurrent (or retried) calls for the same order can never mint two
         bills / two links — exactly one wins, the others resolve to that same request."""
         await self._ensure_enabled(tenant)
+        # Resolve the tenant's single-select payment model up front (defaults to conduit) — fail-closed on
+        # a model this build cannot route yet, before any claim is taken or gateway bill is minted.
+        await self._resolve_mode(tenant)
 
         # Fast path: a still-valid or completed request already exists → return it, no claim needed.
         # But it must be the SAME order: reusing a link whose amount/currency differs from this request
