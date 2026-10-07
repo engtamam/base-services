@@ -30,8 +30,9 @@ _DEFAULT_BASE = "https://api.moyasar.com/v1"
 _PAID = {"PAID", "CAPTURED"}
 _CANCELLED = {"VOIDED", "CANCELLED"}
 _FAILED = {"FAILED", "DECLINED"}
-_PAYOUT_PAID = {"PAID", "PAID_OUT", "COMPLETED"}
-_PAYOUT_FAILED = {"FAILED", "REJECTED"}
+# Moyasar payout statuses (confirmed 2026-10-07): queued, initiated, paid, failed, canceled, returned.
+_PAYOUT_PAID = {"PAID"}
+_PAYOUT_FAILED = {"FAILED", "CANCELED", "CANCELLED", "RETURNED", "REJECTED"}  # queued/initiated -> pending
 _ID_RE = re.compile(r"[A-Za-z0-9_.\-]{1,128}\Z")
 
 

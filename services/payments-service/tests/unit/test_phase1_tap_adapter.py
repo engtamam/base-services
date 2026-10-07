@@ -155,16 +155,19 @@ def test_webhook_unreachable_gateway_propagates(monkeypatch):
 
 
 # ── onboarding ────────────────────────────────────────────────────────────────────
-def test_onboard_api_returns_destination_id(monkeypatch):
-    monkeypatch.setattr(tap, "post_json", lambda *a, **k: (200, {"id": "dst_new", "status": "active"}))
-    r = _gw().onboard_merchant(mode=ONBOARD_API, data={"display_name": "Shop"})
-    assert r.ok and r.destination_id == "dst_new" and r.status == "active"
+def test_onboard_api_creates_a_lead_pending(monkeypatch):
+    # api onboarding posts to the v3 lead API and returns PENDING (no destination yet) — the usable
+    # destination id arrives after approval. fail-closed: not payable until active.
+    captured = {}
 
-
-def test_onboard_api_pending_when_not_yet_active(monkeypatch):
-    monkeypatch.setattr(tap, "post_json", lambda *a, **k: (200, {"id": "dst_new"}))
-    r = _gw().onboard_merchant(mode=ONBOARD_API, data={})
-    assert r.ok and r.status == "pending"       # fail-closed: not payable until active
+    def fake_post(url, payload, headers, timeout=None):
+        captured["url"] = url
+        return 200, {"id": "led_123", "status": "created"}
+    monkeypatch.setattr(tap, "post_json", fake_post)
+    r = _gw().onboard_merchant(mode=ONBOARD_API, data={"brand": {"name": "Shop"}})
+    assert r.ok and r.status == "pending" and r.destination_id == ""
+    assert r.extra["lead_id"] == "led_123"
+    assert captured["url"] == "https://api.tap.company/v3/lead"      # v3, not the v2 charge host
 
 
 def test_onboard_api_failure(monkeypatch):

@@ -192,22 +192,23 @@ class TapGateway:
                                  extra={"onboarding": "hosted"})
         if mode != ONBOARD_API:
             return OnboardResult(ok=False, provider=self.driver, error=f"unsupported onboarding mode {mode!r}")
-        # mode == api: create a destination from the forwarded KYB data; persist ONLY the returned id.
+        # mode == api: create a LEAD (retailer) on the v3 lead API (confirmed 2026-10-07 — onboarding is on
+        # /v3/lead, NOT the v2 charge host). A lead is step 1 of the lead->business->merchant->destination
+        # chain and is NOT yet a payable destination, so we return PENDING with the lead id; the usable
+        # destination id arrives after approval via /sub-merchants/destination (fail-closed: a split can
+        # never route to an unapproved retailer — destination_id() in the store gates on ACTIVE).
+        lead_url = re.sub(r"/v\d+$", "/v3", self._base) + "/lead"
         try:
-            code, resp = post_json(f"{self._base}/destination", dict(data), self._headers(),
-                                   timeout=self._timeout)
+            code, resp = post_json(lead_url, dict(data), self._headers(), timeout=self._timeout)
         except GatewayUnavailable as ex:
             return OnboardResult(ok=False, provider=self.driver, error=str(ex))
         rd = resp if isinstance(resp, dict) else {}
-        dest_id = str(rd.get("id", ""))
-        if code == 0 or not dest_id:
+        lead_id = str(rd.get("id", ""))
+        if code == 0 or not lead_id:
             return OnboardResult(ok=False, provider=self.driver,
-                                 error=f"Tap onboarding failed: {rd.get('message', code)}")
-        # A freshly created destination is typically not yet payable — treat as pending unless Tap says
-        # active, so a split can never route to an unverified account (fail-closed; destination_id() in
-        # the sub-merchant store also gates on active).
-        status = "active" if str(rd.get("status", "")).lower() in ("active", "approved") else "pending"
-        return OnboardResult(ok=True, provider=self.driver, destination_id=dest_id, status=status)
+                                 error=f"Tap onboarding (lead) failed: {rd.get('message', code)}")
+        return OnboardResult(ok=True, provider=self.driver, destination_id="", status="pending",
+                             extra={"lead_id": lead_id})
 
     # ── payout ───────────────────────────────────────────────────────────────────
     def fetch_payout_status(self, *, payout_ref: str) -> PayoutStatus:
