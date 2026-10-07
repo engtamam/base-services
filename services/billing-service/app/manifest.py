@@ -140,6 +140,7 @@ def build_manifest(
             {"path": "/internal/billing/grants/reconcile", "tier": "internal", "method": "POST"},
             {"path": "/internal/billing/grants/reconcile-clawbacks", "tier": "internal", "method": "POST"},
             {"path": "/internal/billing/cycle-due", "tier": "internal", "method": "POST"},
+            {"path": "/internal/billing/expiry-warn-sweep", "tier": "internal", "method": "POST"},
             # Renewal foresight read + cross-app discount coupon management (internal peer tier).
             {"path": "/internal/billing/subscriptions/renewing-soon", "tier": "internal", "method": "GET"},
             {"path": "/internal/billing/coupons", "tier": "internal", "method": "POST"},

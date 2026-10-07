@@ -5711,6 +5711,74 @@
         ]
       }
     },
+    "/internal/billing/expiry-warn-sweep": {
+      "post": {
+        "description": "Emit subscription.expiring_soon for subscriptions whose period ends within the warning window.\n\nDriven by a daily cron beside cycle-due. Bounded/paged, idempotent per (subscription, period_end)\nso it fires exactly once per period, and re-arms when the period rolls forward on renewal. billing\ndelivers nothing itself \u2014 only the bus event, for a consumer to turn into a reminder.",
+        "operationId": "expiry_warn_sweep_internal_billing_expiry_warn_sweep_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Internal-Token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Internal-Assertion",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Assertion"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Expiry Warn Sweep Internal Billing Expiry Warn Sweep Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Expiry Warn Sweep",
+        "tags": [
+          "internal"
+        ]
+      }
+    },
     "/internal/billing/grants/drain": {
       "post": {
         "description": "Deliver every credit grant that is due.\n\nDriven by the platform's scheduler rather than a thread in here, so a restart cannot lose the\nonly thing that was retrying, and so an operator can see the schedule.",

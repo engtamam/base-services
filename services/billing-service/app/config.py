@@ -351,6 +351,15 @@ class Settings(BaseSettings):
     BILLING_RENEWAL_INVOICE_MODE: str = "per_subscription"
     DUNNING_MAX_ATTEMPTS: int = 4
     GRACE_DAYS: int = 7
+    # ── subscription expiry warning ────────────────────────────────────────────
+    # How many days BEFORE a subscription's current_period_end the daily expiry-warn sweep emits
+    # subscription.expiring_soon (so a consumer can prompt the customer before access lapses). billing
+    # sends nothing itself — only the bus event. Fired exactly once per period, keyed on
+    # (subscription, period_end), and re-arms on renewal. 0 disables warning entirely.
+    SUBSCRIPTION_EXPIRY_WARN_DAYS: int = 3
+    # Ceiling on how many due-to-warn subscriptions one sweep pass processes — the same bounded-sweep
+    # discipline as CYCLE_SWEEP_LIMIT so the daily cron finishes; the report flags when it capped.
+    SUBSCRIPTION_EXPIRY_SWEEP_LIMIT: int = 1000
     # When a paused subscription's invoice is paid (card, webhook or off-gateway settle), reactivate
     # it automatically — the standard reopens the instant the money lands, no manual reactivate.
     # Runtime-editable per tenant (RUNTIME_POLICY); read at the point of use in _mark_paid.

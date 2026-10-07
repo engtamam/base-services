@@ -83,6 +83,10 @@ CRONS: dict[str, list] = {   # each job: a (name, schedule, path) tuple, or a di
                         # offset from dunning so the two sweeps do not contend. Without it, year-two
                         # revenue is never invoiced.
                         ("cycle-due", "17 3 * * *", "/internal/billing/cycle-due"),
+                        # Warn before a subscription period ends — emits subscription.expiring_soon.
+                        # Daily, offset from cycle-due/dunning so the sweeps do not contend. Idempotent
+                        # per period, so a duplicate tick re-warns nobody.
+                        ("expiry-warn", "47 3 * * *", "/internal/billing/expiry-warn-sweep"),
                         # Deliver due credit grants. Its handler is explicitly "driven by the
                         # platform's scheduler"; without this the grant never lands.
                         ("grants-drain", "*/5 * * * *", "/internal/billing/grants/drain")],

@@ -39,6 +39,16 @@ PAYMENT_REFUNDED = "payment.refunded"
 SUBSCRIPTION_RENEWED = "subscription.renewed"
 SUBSCRIPTION_CANCELLED = "subscription.cancelled"
 INVOICE_PAID = "invoice.paid"
+# A new invoice has been raised for a subscription and is NOT yet paid — fired the moment it becomes
+# due, BEFORE any charge attempt or dunning. DISTINCT from invoice.paid (which fires when the money
+# lands): this is the "awaiting payment" hint a consumer uses to send a pay-link / reminder. A hint,
+# never money — the invoice is the durable fact (read it back via GET /internal/billing/invoices/{id}).
+INVOICE_CREATED = "invoice.created"
+# A subscription's current period ends within the configured warning window (SUBSCRIPTION_EXPIRY_WARN
+# _DAYS). Fired EXACTLY ONCE per period by the daily expiry-warn sweep (idempotent per
+# subscription+period_end), and re-arms naturally when the period rolls forward on renewal. A proactive
+# "renews/expires soon" prompt — distinct from subscription.renewed, which fires AFTER the roll.
+SUBSCRIPTION_EXPIRING_SOON = "subscription.expiring_soon"
 # A wallet-renewal debit was refused because the customer's fund could not cover the invoice. The
 # subscription is suspended IMMEDIATELY (no dunning retry — a prepaid balance does not grow back on
 # its own), so a consumer sends a "top up your wallet" prompt. Distinct from payment.failed, which
@@ -59,7 +69,8 @@ SUBSCRIPTION_RENEWAL_PAYMENT_LINK = "subscription.renewal_payment_link"
 
 EMITTED = (
     PAYMENT_SUCCEEDED, PAYMENT_FAILED, PAYMENT_REFUNDED,
-    SUBSCRIPTION_RENEWED, SUBSCRIPTION_CANCELLED, INVOICE_PAID,
+    SUBSCRIPTION_RENEWED, SUBSCRIPTION_CANCELLED, INVOICE_PAID, INVOICE_CREATED,
+    SUBSCRIPTION_EXPIRING_SOON,
     SUBSCRIPTION_RENEWAL_WALLET_INSUFFICIENT, SUBSCRIPTION_SUSPENDED,
     SUBSCRIPTION_RENEWAL_PAYMENT_LINK,
 )
@@ -122,4 +133,28 @@ def payment_payload(inv, *, payment_id: str = "", source: str = "") -> dict[str,
         "currency": inv.currency,
         "paid_at": getattr(inv, "paid_at", "") or "",
         "source": source,
+    }
+
+
+def invoice_created_payload(inv, *, subscription_id: str = "", plan_id: str = "",
+                            period_start: Any = "", period_end: Any = "") -> dict[str, Any]:
+    """What a consumer needs when an invoice is raised and is awaiting payment.
+
+    The SAME privacy discipline as payment_payload(): tenant + invoice id + the amount, and nothing
+    that is not the consumer's to hold (no buyer name/address/tax number). `due_at` is the invoice's
+    own creation timestamp — the moment it became due — and period_start/period_end carry the billing
+    window the invoice covers (the due-date proxy billing already uses on the invoice meta). For a
+    CONSOLIDATED invoice there is no single subscription, so subscription_id/plan_id are empty and the
+    invoice id is the thing to key on.
+    """
+    return {
+        "tenant": inv.tenant,
+        "subscription_id": subscription_id or (getattr(inv, "subscription_id", "") or ""),
+        "invoice_id": inv.id,
+        "plan_id": plan_id,
+        "amount_minor": inv.total_minor,
+        "currency": inv.currency,
+        "due_at": getattr(inv, "created", "") or "",
+        "period_start": period_start,
+        "period_end": period_end,
     }

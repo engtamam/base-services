@@ -63,6 +63,9 @@ cronJobs:
   - name: cycle-due
     schedule: "17 3 * * *"
     path: /internal/billing/cycle-due
+  - name: expiry-warn
+    schedule: "47 3 * * *"
+    path: /internal/billing/expiry-warn-sweep
   - name: grants-drain
     schedule: "*/5 * * * *"
     path: /internal/billing/grants/drain

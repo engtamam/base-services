@@ -116,6 +116,17 @@ async def cycle_due(request: Request) -> dict:
     return await (await build_billing(request)).cycle_due_sweep()
 
 
+@router.post("/billing/expiry-warn-sweep", dependencies=[Depends(require_internal_token)])
+async def expiry_warn_sweep(request: Request) -> dict:
+    """Emit subscription.expiring_soon for subscriptions whose period ends within the warning window.
+
+    Driven by a daily cron beside cycle-due. Bounded/paged, idempotent per (subscription, period_end)
+    so it fires exactly once per period, and re-arms when the period rolls forward on renewal. billing
+    delivers nothing itself — only the bus event, for a consumer to turn into a reminder.
+    """
+    return await (await build_billing(request)).expiry_warn_sweep()
+
+
 class ConsumeIn(BaseModel):
     tenant: str = Field(min_length=1, max_length=200)
     key: str = Field(min_length=1, max_length=200)

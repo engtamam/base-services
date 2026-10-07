@@ -38,8 +38,10 @@ poll. A read is self-healing; a missed event is wrong for ever.
 
 | event | when | key fields |
 |---|---|---|
+| `invoice.created` | an invoice is raised for a subscription and is NOT yet paid (before any charge) | `invoice_id`, `subscription_id`, `plan_id`, `amount_minor`, `currency`, `due_at`, `period_start`, `period_end` |
 | `invoice.paid` | an invoice becomes paid, by any route | `invoice_id`, `amount_minor`, `paid_at` |
 | `payment.succeeded` | same moment — the money is recorded | `payment_id`, `tenant`, `amount_minor` |
+| `subscription.expiring_soon` | N days before a period ends (daily sweep, once per period) | `subscription_id`, `plan_id`, `period_end`, `days_remaining` |
 | `payment.failed` | a charge failed | `attempts`, `final`, `next_retry_at` |
 | `payment.refunded` | a refund completed | `payment_id`, `amount_minor` |
 | `subscription.renewed` | a billing period rolled | `period_key`, `period_start`, `period_end` |
@@ -56,6 +58,15 @@ Notes that matter:
   period ends. A consumer that cannot tell the two apart either cuts access early or never cuts it.
 - **`subscription.renewed` carries `period_key`** — the idempotency key the billing cycle itself
   used. Key your own work on it and a replay cannot double-apply.
+- **`invoice.created` is the "awaiting payment" hint, fired before any charge** — use it to send a
+  pay-link or reminder the moment an invoice becomes due. It is a hint, not money: the invoice is the
+  durable fact (read it back via `GET /internal/billing/invoices/{invoice_id}`), and `invoice.paid` /
+  `payment.succeeded` fire when the money lands. A consolidated invoice spans several subscriptions, so
+  it carries empty `subscription_id`/`plan_id` and a `consolidated: true` flag — key on `invoice_id`.
+- **`subscription.expiring_soon` fires exactly once per period** (keyed on subscription + period end)
+  and re-arms when the period rolls forward on renewal. `days_remaining` is whole days rounded up. It
+  is the proactive counterpart to `subscription.renewed`: a prompt BEFORE access lapses, not after the
+  roll. Controlled by `SUBSCRIPTION_EXPIRY_WARN_DAYS` (default 3; `0` disables).
 
 ### wallet-service
 

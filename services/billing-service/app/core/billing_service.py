@@ -1484,6 +1484,14 @@ class BillingService:
         # completes the advance above). A hard crash before the charge leaves an UNPAID invoice
         # (recovered by reconcile/dunning), never a double charge — the money-safe direction.
         await self._idempo.mark(key, {"invoice_id": inv.id})
+        if self._events is not None:
+            # The invoice exists, is durable and UNPAID — fire BEFORE the charge so a consumer can send
+            # a pay-link / reminder the instant it becomes due. period_start/period_end are the window
+            # being billed, read before the advance below. Only the fresh-create path reaches here (the
+            # replay branch returns earlier), so it fires exactly once per invoice.
+            await self._events.emit(_events.INVOICE_CREATED, _events.invoice_created_payload(
+                inv, subscription_id=sub.id, plan_id=sub.plan_id,
+                period_start=sub.current_period_start, period_end=sub.current_period_end))
         # Charge BEFORE advancing the period. A normal decline/unavailable does NOT raise (it dunns and
         # returns), so the period still rolls on a failed charge — the intended behaviour. But a hard
         # crash mid-charge raises, leaving the sub UN-advanced under the marked key: a re-run then
@@ -1574,6 +1582,12 @@ class BillingService:
                       subtotal_minor=net, tax_minor=tax, total_minor=total,
                       currency=price.get("currency", self._cfg["currency"]), status="open", created=iso())
         await self._invoices.save(inv)
+        if self._events is not None:
+            # An overage invoice is a subscription invoice too — raised unpaid, charged next. Fire the
+            # same awaiting-payment hint consistently with the renewal/consolidated paths.
+            await self._events.emit(_events.INVOICE_CREATED, _events.invoice_created_payload(
+                inv, subscription_id=sub.id, plan_id=sub.plan_id,
+                period_start=sub.current_period_start, period_end=sub.current_period_end))
         await self._charge_invoice(inv, sub.payment_token, sub)
         await self._idempo.mark(key, {"invoice_id": inv.id, "overage": over})
         return await self._invoices.fetch(inv.id) or inv
@@ -2288,6 +2302,68 @@ class BillingService:
         return {"due": len(due), "invoiced": invoiced, "canceled": canceled, "failed": failed,
                 "mode": mode, "capped": len(due) >= limit, "errors": errors}
 
+    async def expiry_warn_sweep(self) -> dict[str, Any]:
+        """Warn EXACTLY ONCE, N days before a subscription's period ends, on the event bus.
+
+        The proactive counterpart to cycle_due_sweep: that one INVOICES a period that has ended; this
+        one HINTS, ahead of time, that one is about to. It emits subscription.expiring_soon so a
+        consumer (notification-service etc.) can prompt the customer before access lapses — billing
+        itself sends no WhatsApp/email, only the bus event.
+
+        BOUNDED & PAGED like every other sweep. It reuses SubscriptionStore.renewing_soon — the same
+        status-filtered, keyset-ordered read as due() with a future horizon and a real resumable
+        cursor — and pages it, so there is never a full-table scan on a request path.
+
+        FIRES EXACTLY ONCE PER PERIOD, and re-arms on renewal, via an idempotency stamp keyed on
+        (subscription, period_end): the same deterministic guard run_cycle uses. A repeated sweep (a
+        retry, a duplicate cron tick) re-claims nothing and emits nothing; when run_cycle rolls the
+        period forward, the key changes and the next window is warned afresh.
+
+        WINDOW: strictly `now < current_period_end <= now + warn_days`. A period that has ALREADY
+        lapsed is the renewal sweep's job, not a warning, so it is skipped — a warning never fires
+        outside its window. warn_days <= 0 disables warning entirely (nothing is emitted).
+        """
+        if self._events is None:
+            return {"warned": 0, "scanned": 0, "disabled": True}
+        warn_days = int(self._cfg.get("expiry_warn_days", 3))
+        if warn_days <= 0:
+            return {"warned": 0, "scanned": 0, "warn_days": warn_days, "disabled": True}
+        limit = int(self._cfg.get("expiry_sweep_limit", self._cfg.get("cycle_sweep_limit", 1000)))
+        now = self._clock()
+        horizon = now + warn_days * 86400
+        warned = scanned = 0
+        cursor: str | None = None
+        capped = False
+        while scanned < limit:
+            rows, cursor = await self._subs.renewing_soon(horizon, limit=500, cursor=cursor)
+            for r in rows:
+                period_end = float(r.get("current_period_end", 0) or 0)
+                # Strictly BEFORE the period ends — a lapsed period is renewed, not warned. (renewing_soon
+                # caps at the horizon but does NOT exclude an already-lapsed period, so this guard does.)
+                if not (now < period_end <= horizon):
+                    continue
+                if scanned >= limit:
+                    capped = True
+                    break
+                scanned += 1
+                # Idempotent per (subscription, period_end): fires once, re-arms when the period rolls.
+                key = f"expiry_warn:{r.get('id', '')}:{int(period_end)}"
+                proceed, _prior = await self._idempo.claim(key)
+                if not proceed:
+                    continue      # already warned for this period (or a concurrent sweep holds it)
+                # Whole days remaining, rounded UP so "ends in 18 hours" reads as 1 day, never 0.
+                days_remaining = max(0, int(-(-(period_end - now) // 86400)))
+                await self._events.emit(_events.SUBSCRIPTION_EXPIRING_SOON, {
+                    "tenant": r.get("tenant", ""), "subscription_id": r.get("id", ""),
+                    "plan_id": r.get("plan_id", ""), "period_end": period_end,
+                    "days_remaining": days_remaining})
+                await self._idempo.mark(key, {"warned_at": iso(), "period_end": period_end})
+                warned += 1
+            if capped or not cursor:
+                break
+        return {"warned": warned, "scanned": scanned, "warn_days": warn_days,
+                "capped": capped or (scanned >= limit and bool(cursor))}
+
     def _group_gateway_key(self, sub) -> str:
         """The gateway a consolidated invoice will charge on. In pinned mode that is the subscription's
         OWN pinned gateway (so different-gateway subs never share one invoice); in active mode every sub
@@ -2388,6 +2464,14 @@ class BillingService:
         for sub, skey, _billed in claimed:
             await self._idempo.mark(skey, {"invoice_id": inv.id})
         await self._idempo.mark(gkey, {"invoice_id": inv.id})
+        if self._events is not None:
+            # ONCE per invoice, BEFORE the charge. A consolidated invoice spans several subscriptions,
+            # so it carries no single subscription_id/plan_id (both empty, as on the invoice row) — the
+            # invoice id is what a consumer keys on; the per-subscription detail is the renewed events
+            # below. `consolidated` flags the shape so a consumer need not infer it from an empty sub id.
+            payload = _events.invoice_created_payload(inv, period_end=bucket)
+            payload["consolidated"] = True
+            await self._events.emit(_events.INVOICE_CREATED, payload)
         # Charge BEFORE advancing (same reasoning as run_cycle): a crash mid-charge leaves the subs
         # un-advanced under marked keys, so a re-run replays this invoice and completes the advances.
         await self._charge_invoice(inv, rep_token, claimed[0][0])   # one charge, group's gateway/token
